@@ -1,7 +1,7 @@
 # Xsens_DOT_PC_Reader
 use bleak to scan, connect, configure, identify(LED Blink), change device tag, read data, save to csv for DOT
 
-Since this code is using [bleak](https://github.com](https://github.com/hbldh/bleak), it is possible to use cross-platforms like Windows/ubuntu/macOS, etc. But the author only tested on Windows 11.
+Since this code is using [bleak](https://github.com/hbldh/bleak), it is possible to use cross-platforms like Windows/ubuntu/macOS, etc. But the author only tested on Windows 11.
 
 ## Windows 11 Setup
 Before using this code, firstly you need to go to your Bluetooth & devices in Windows Settings, and "Add device", you only need to pair once of the sensors, next time you don't need to do this again.
