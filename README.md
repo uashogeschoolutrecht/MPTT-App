@@ -64,6 +64,15 @@ for i in range(len(sensors)):
     await sensors[i].setDeviceTag(sensors[i].name)
 ```
 
+
+To setup data output rate
+if you experience data loss(for example the recorded csv files are different, you will need to decrease the output rate.
+```
+print("set sensor output rate, only these values allowed: 1, 4, 10, 12, 15, 20, 30, 60, 120")
+for s in sensors:
+    await s.setOuputRate(30)
+```
+
 To disable the loggging:
 ```
 for s in sensors:
