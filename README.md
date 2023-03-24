@@ -31,11 +31,11 @@ for s in sensors:
     await s.identifySensor()
 ```
 
-To change the device tag(name):
+To change the device tag(name), also update the BleSensor object's name:
 ```
 for i in range(len(sensors)):
-    dotname = "dot" + i
-    await sensors(i).setDeviceTag("dotname")
+    sensors[i].name = "dot" + str(i+1)
+    await sensors[i].setDeviceTag(sensors[i].name)
 ```
 
 
