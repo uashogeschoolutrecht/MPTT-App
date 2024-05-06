@@ -11,9 +11,12 @@ pip install numpy bleak
 
 ## Payload Options
 currently 3 payloads type are created:
-orientationEuler: timestamp + roll/pitch/yaw
-orientationQuaternion: timestamp + quaternion(q0, q1, q2, q3)
-customMode1: timestamp + euler angle(roll, pitch, yaw) + free acceleration(x,y,z) + angular velocity(x,y,z)
+
+- orientationEuler: timestamp + roll/pitch/yaw
+
+- orientationQuaternion: timestamp + quaternion(q0, q1, q2, q3)
+
+- customMode1: timestamp + euler angle(roll, pitch, yaw) + free acceleration(x,y,z) + angular velocity(x,y,z)
 
 ## How to run this code:
 open your CMD(Command Prompt)
