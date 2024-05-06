@@ -1,7 +1,7 @@
 # Xsens_DOT_PC_Reader
 use bleak to scan, connect, configure, identify(LED Blink), change device tag, read data, save to csv for DOT
 
-Since this code is using [bleak](https://github.com/hbldh/bleak), it is possible to use cross-platforms like Windows/ubuntu/macOS, etc. But the author only tested on Windows 11.
+Since this code is using [bleak](https://github.com/hbldh/bleak), it is possible to use cross-platforms like Windows/ubuntu/macOS, etc. But the author only tested on `Windows 11` and `RasperryPi 5B`.
 
 
 ## Library Dependency
