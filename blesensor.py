@@ -50,31 +50,35 @@ class DotData:
 
 class Scanner:
     def __init__(self):
-        self._client = None
+        self._lock = asyncio.Lock()
 
-    async def scan_and_filter_xsens_dot(self, timeout=10):
-        print(f"Scanning BLE devices for {timeout} seconds.....")
-        async with bleak.BleakScanner() as scanner:
-            bledevices = await scanner.discover(timeout=timeout)
-
-        if not bledevices:
-            print("No BLE devices")
-
-        xsens_dot_devices = []
-        for i, d in enumerate(bledevices):
-            if d.name and "xsens dot" in d.name.lower():
-                xsens_dot_devices.append(d)
-
-        if not xsens_dot_devices:
-            print("No Xsens Dot Devices")
-            return
-
-        numOfDevices = len(xsens_dot_devices)
-        print(f"{numOfDevices} of Xsens DOT devices found:")
-        for i, d in enumerate(xsens_dot_devices):
-            print(f"{i+1}#: {d.name}, {d.address}")
-
-        return xsens_dot_devices
+    async def scan_and_filter_xsens_dot(self, timeout=10, retry=3):
+        async with self._lock:
+            print(f"Scanning BLE devices for {timeout} seconds with lock acquired...")
+            attempt = 0
+            while attempt < retry:
+                try:
+                    bledevices = await bleak.BleakScanner.discover(timeout=timeout)
+                    if not bledevices:
+                        print("No BLE devices found.")
+                    else:
+                        xsens_dot_devices = [d for d in bledevices if d.name and "xsens dot" in d.name.lower()]
+                        if xsens_dot_devices:
+                            print(f"{len(xsens_dot_devices)} Xsens DOT devices found:")
+                            for i, d in enumerate(xsens_dot_devices):
+                                print(f"{i+1}#: {d.name}, {d.address}")
+                            return xsens_dot_devices
+                        else:
+                            print("No Xsens Dot Devices found.")
+                            if attempt < retry - 1:
+                                print("Retrying scan...")
+                            await asyncio.sleep(1)  # Wait a bit before retrying
+                except Exception as e:
+                    print(f"Error during scanning: {e}")
+                finally:
+                    attempt += 1
+            print("Lock released after scanning.")
+            return None
 
 class BleSensor:
     def __init__(self, address):
@@ -91,6 +95,14 @@ class BleSensor:
         print(f"connecting to {self.address}")
         self._client = bleak.BleakClient(self.address)
         await self._client.connect()
+        
+    async def disconnect(self):
+        if self._client and self._client.is_connected:
+            await self._client.disconnect()
+            print("Disconnected successfully.")
+        else:
+            print("Client is not connected.")
+        
 
     async def get_services(self):
         services = self._client.services

@@ -8,8 +8,11 @@ Before using this code, firstly you need to go to your Bluetooth & devices in Wi
 ![Alt text](add_bluetooth_device.jpg)
 
 ## Library Dependency
-You will need to use **pip install** to install the relative libraries in this code.
+```
+pip install numpy bleak
+```
 
+## Payload Options
 currently 3 payloads type are created:
 orientationEuler: timestamp + roll/pitch/yaw
 orientationQuaternion: timestamp + quaternion(q0, q1, q2, q3)

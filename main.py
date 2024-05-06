@@ -12,7 +12,8 @@ import sys
 
 async def main():
     #scan sensors
-    devices = await blesensor.Scanner.scan_and_filter_xsens_dot(10)
+    scanner = blesensor.Scanner()  # Create an instance of Scanner
+    devices = await scanner.scan_and_filter_xsens_dot(5)  # Use the instance to call the method
     if not devices:
         print("No Xsens DOT, considering turn them on or shake them from sleep mode")
         return
@@ -56,7 +57,7 @@ async def main():
 
     #Start Measurement in specific mode, cutomMode1 or orientationEuler or orientationQuaternion
     for s in sensors:
-        s.payloadType = blesensor.PayloadMode.customMode1
+        s.payloadType = blesensor.PayloadMode.orientationEuler
         await s.startMeasurement()
     print("\nNotifications enabled. Waiting for data...")
 
@@ -72,7 +73,7 @@ async def main():
 
     # Run within the timeToRunInMinute time range.
     startTimeSeconds = int(round(time.time()))
-    timeToRunInMinute = 0.2
+    timeToRunInMinute = 1
     print(f"run the test for {timeToRunInMinute} minutes")
     while int(round(time.time())) - startTimeSeconds < timeToRunInMinute*60:
         await asyncio.sleep(0.1)
@@ -86,10 +87,15 @@ async def main():
     # for s in sensors:
     #     await s.poweroffSensor()
     # await asyncio.sleep(2)  # wait for response
+    
+    print("disconnect all sensors")
+    for s in sensors:
+        await s.disconnect()
 
     print("exit program")
     await sys.exit(0)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
