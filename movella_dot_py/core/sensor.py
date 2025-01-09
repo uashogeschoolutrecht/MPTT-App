@@ -7,6 +7,7 @@ from ..models.data_structures import (SensorConfiguration, DeviceInfo,
                                     SensorData)
 from ..models.enums import PayloadMode, FilterProfile
 from .collector import SensorDataCollector
+import time
 
 
 class MovellaDOTSensor:
