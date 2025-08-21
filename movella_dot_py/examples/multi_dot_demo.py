@@ -17,62 +17,6 @@ from movella_dot_py.core.sensor import MovellaDOTSensor
 from movella_dot_py.models.data_structures import SensorConfiguration
 from movella_dot_py.models.enums import OutputRate, FilterProfile, PayloadMode
 
-async def live_plot_euler(sensor: MovellaDOTSensor, stop_event: asyncio.Event, window_seconds: float = 10.0):
-    """Live plot roll, pitch, yaw from a single sensor.
-    Updates at ~20 Hz without blocking the asyncio loop.
-    """
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(9, 4))
-    line_roll, = ax.plot([], [], label="Roll")
-    line_pitch, = ax.plot([], [], label="Pitch")
-    line_yaw, = ax.plot([], [], label="Yaw")
-
-    ax.set_title(f"Live Euler Angles - {getattr(sensor, '_device_tag', '') or getattr(sensor, '_device_address', 'Sensor')}")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Angle (deg)")
-    ax.set_ylim(-180, 180)
-    ax.grid(True)
-    ax.legend(loc="upper right")
-
-    try:
-        while not stop_event.is_set() and plt.fignum_exists(fig.number):
-            data = sensor.get_collected_data()
-            if data and len(data.get('timestamps', [])) > 0 and len(data.get('euler_angles', [])) > 0:
-                ts = np.array(data['timestamps'], dtype=np.float64)
-                eul = np.array(data['euler_angles'], dtype=np.float64)  # shape (N, 3) => roll, pitch, yaw
-
-                # Convert microseconds to seconds relative to first timestamp
-                t = (ts - ts[0]) / 1e6
-
-                # Keep a sliding window
-                t_end = t[-1]
-                t_start = max(0.0, t_end - window_seconds)
-                mask = t >= t_start
-
-                t_w = t[mask]
-                roll = eul[mask, 0]
-                pitch = eul[mask, 1]
-                yaw = eul[mask, 2]
-
-                line_roll.set_data(t_w, roll)
-                line_pitch.set_data(t_w, pitch)
-                line_yaw.set_data(t_w, yaw)
-
-                # Update x-limits to follow the window
-                ax.set_xlim(t_start, max(window_seconds, t_end))
-                # Y already fixed to [-180, 180]
-
-                fig.canvas.draw_idle()
-            # Allow GUI to process events and throttle updates
-            plt.pause(0.01)
-            await asyncio.sleep(0.01)
-    finally:
-        plt.ioff()
-        try:
-            plt.close(fig)
-        except Exception:
-            pass
-
 def _quat_normalize(q: np.ndarray) -> np.ndarray:
     q = np.asarray(q, dtype=np.float64)
     n = np.linalg.norm(q, axis=-1, keepdims=True)
@@ -115,100 +59,6 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
     yaw = np.degrees(np.arctan2(siny_cosp, cosy_cosp))
 
     return np.array([roll, pitch, yaw], dtype=np.float64)
-
-async def live_plot_tilt_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio.Event, window_seconds: float = 10.0, show_yaw: bool = False):
-    """Live, human-readable tilt plot from quaternion stream with calibration.
-    - Press 'c' or space in the plot window to set the current pose as zero.
-    - Plots Left/Right (roll) and Forward/Backward (pitch) in degrees relative to calibration.
-    """
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(9, 4))
-    line_roll, = ax.plot([], [], label="Left/Right (Roll)")
-    line_pitch, = ax.plot([], [], label="Forward/Backward (Pitch)")
-    line_yaw = None
-    if show_yaw:
-        line_yaw, = ax.plot([], [], label="Twist (Yaw)", linestyle='--', alpha=0.6)
-
-    ax.set_title("Live Tilt (press 'c' to calibrate)")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Angle (deg)")
-    ax.set_ylim(-90, 90)
-    ax.grid(True)
-    ax.legend(loc="upper right")
-
-    calib_q = None  # quaternion at rest [w,x,y,z]
-
-    def on_key(event):
-        nonlocal calib_q
-        if event.key in ("c", " "):
-            data = sensor.get_collected_data()
-            quats = data.get('quaternions', []) if data else []
-            if quats:
-                calib_q = _quat_normalize(np.asarray(quats[-1], dtype=np.float64))
-                print("Calibrated zero pose.")
-            else:
-                print("No data yet to calibrate.")
-        elif event.key == "r":
-            calib_q = None
-            print("Calibration cleared.")
-
-    cid = fig.canvas.mpl_connect('key_press_event', on_key)
-
-    try:
-        while not stop_event.is_set() and plt.fignum_exists(fig.number):
-            data = sensor.get_collected_data()
-            if data and len(data.get('timestamps', [])) > 0 and len(data.get('quaternions', [])) > 0:
-                ts = np.asarray(data['timestamps'], dtype=np.float64)
-                qs = np.asarray(data['quaternions'], dtype=np.float64)  # shape (N, 4) => w,x,y,z
-                qs = _quat_normalize(qs)
-
-                # Convert microseconds to seconds relative to first timestamp
-                t = (ts - ts[0]) / 1e6
-
-                # Sliding window
-                t_end = t[-1]
-                t_start = max(0.0, t_end - window_seconds)
-                mask = t >= t_start
-                t_w = t[mask]
-                qs_w = qs[mask]
-
-                if qs_w.size > 0:
-                    # Initialize calibration if not set yet
-                    if calib_q is None:
-                        calib_q = qs_w[0]
-
-                    # Compute relative rotation q_rel = q_curr * conj(q_calib)
-                    rel_angles = []
-                    q_calib_conj = _quat_conj(calib_q)
-                    for q_cur in qs_w:
-                        q_rel = _quat_mul(q_cur, q_calib_conj)
-                        q_rel = _quat_normalize(q_rel)
-                        rel_angles.append(_quat_to_euler_deg(q_rel))
-                    rel_angles = np.vstack(rel_angles)  # shape (M, 3)
-
-                    roll = rel_angles[:, 0]
-                    pitch = rel_angles[:, 1]
-                    yaw = rel_angles[:, 2]
-
-                    line_roll.set_data(t_w, roll)
-                    line_pitch.set_data(t_w, pitch)
-                    if show_yaw and line_yaw is not None:
-                        line_yaw.set_data(t_w, yaw)
-
-                    # Update x-limits
-                    ax.set_xlim(t_start, max(window_seconds, t_end))
-                    fig.canvas.draw_idle()
-
-            plt.pause(0.01)
-            await asyncio.sleep(0.01)
-    finally:
-        try:
-            fig.canvas.mpl_disconnect(cid)
-        except Exception:
-            pass
-        plt.ioff()
-        with contextlib.suppress(Exception):
-            plt.close(fig)
 
 async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio.Event, xy_range: float = 30.0):
     """Live 2D ball showing tilt from quaternion stream with calibration.
@@ -270,6 +120,18 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     min_range = 5.0
     max_range = 180.0
 
+    # Error plot (absolute error in degrees) — small axes in control window
+    err_window_sec = 30.0
+    ax_err = fig_ctrl.add_axes([0.68, 0.70, 0.30, 0.25])
+    ax_err.set_title('Abs Error (deg)', fontsize=9)
+    ax_err.set_xlim(0.0, err_window_sec)
+    ax_err.set_ylim(0.0, 3.0 * current_range)
+    ax_err.grid(True, linestyle=':', alpha=0.3)
+    ax_err.tick_params(labelsize=8)
+    err_line, = ax_err.plot([], [], color='tab:red', lw=1.0)
+    err_times: deque = deque()
+    err_values: deque = deque()
+
     # Moving average buffers
     buf_roll = deque(maxlen=int(s_win.val))
     buf_pitch = deque(maxlen=int(s_win.val))
@@ -306,6 +168,8 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         # Update reference path for new range
         theta_path, x_path, y_path = compute_path_arrays(current_range)
         path_line.set_data(x_path, y_path)
+        # Update error plot Y-scale to match new range
+        ax_err.set_ylim(0.0, 3.0 * current_range)
         text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
         fig.canvas.draw_idle()
 
@@ -433,6 +297,20 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
                 # Update readouts
                 text_deg.set_text(f"L/R: {roll_f:+.1f}°, F/B: {pitch_f:+.1f}°")
                 text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
+
+                # Update error plot (absolute Euclidean error in degrees)
+                now_t = time.monotonic()
+                err = float(np.hypot(x - x_t, y - y_t))
+                err_times.append(now_t)
+                err_values.append(err)
+                # Drop old samples outside the window
+                cutoff = now_t - err_window_sec
+                while err_times and err_times[0] < cutoff:
+                    err_times.popleft(); err_values.popleft()
+                # Prepare relative time axis [0, err_window_sec]
+                t_rel = [t - cutoff for t in err_times]
+                err_line.set_data(t_rel, list(err_values))
+                ax_err.set_xlim(0.0, err_window_sec)
 
             # Draw updates (both figures if present)
             fig.canvas.draw_idle()
