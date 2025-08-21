@@ -6,6 +6,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import contextlib
+from matplotlib.widgets import Button
 
 
 # Add the parent directory to the Python path
@@ -208,6 +209,96 @@ async def live_plot_tilt_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         with contextlib.suppress(Exception):
             plt.close(fig)
 
+async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio.Event, xy_range: float = 30.0):
+    """Live 2D ball showing tilt from quaternion stream with calibration.
+    X = Forward/Backward (pitch, deg), Y = Left/Right (roll, deg).
+    Press the control window buttons to Calibrate (Zero) or Clear.
+    """
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(5, 5))
+    # Removed title and axis labels
+    ax.set_xlim(-xy_range, xy_range)
+    ax.set_ylim(-xy_range, xy_range)
+    ax.invert_yaxis()  # Invert Y axis
+    ax.set_aspect('equal', adjustable='box')
+    ax.grid(True, linestyle=':', alpha=0.5)
+    ax.axhline(0, color='k', lw=0.5)
+    ax.axvline(0, color='k', lw=0.5)
+
+    ball, = ax.plot([0], [0], 'o', color='red', markersize=12)
+
+    # Control window with buttons
+    fig_ctrl = plt.figure(figsize=(3.6, 1.2))
+    fig_ctrl.canvas.manager.set_window_title('Controls') if hasattr(fig_ctrl.canvas.manager, 'set_window_title') else None
+    ax_zero = fig_ctrl.add_axes([0.08, 0.2, 0.4, 0.6])
+    ax_clear = fig_ctrl.add_axes([0.52, 0.2, 0.4, 0.6])
+    btn_zero = Button(ax_zero, 'Zero')
+    btn_clear = Button(ax_clear, 'Clear')
+
+    calib_q = None
+
+    def do_zero(_evt=None):
+        nonlocal calib_q
+        data = sensor.get_collected_data()
+        quats = data.get('quaternions', []) if data else []
+        if quats:
+            calib_q = _quat_normalize(np.asarray(quats[-1], dtype=np.float64))
+            print("Calibrated zero pose.")
+        else:
+            print("No data yet to calibrate.")
+
+    def do_clear(_evt=None):
+        nonlocal calib_q
+        calib_q = None
+        print("Calibration cleared.")
+
+    btn_zero.on_clicked(do_zero)
+    btn_clear.on_clicked(do_clear)
+
+    # Keep keyboard shortcuts too (optional)
+    def on_key(event):
+        if event.key in ("c", " "):
+            do_zero()
+        elif event.key == "r":
+            do_clear()
+
+    cid_key = fig.canvas.mpl_connect('key_press_event', on_key)
+
+    try:
+        while not stop_event.is_set() and plt.fignum_exists(fig.number):
+            data = sensor.get_collected_data()
+            if data and len(data.get('quaternions', [])) > 0:
+                q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
+                q_cur = _quat_normalize(q_cur)
+
+                if calib_q is None:
+                    calib_q = q_cur
+
+                # Relative rotation
+                q_rel = _quat_mul(q_cur, _quat_conj(calib_q))
+                q_rel = _quat_normalize(q_rel)
+                roll, pitch, _yaw = _quat_to_euler_deg(q_rel)
+
+                # Map to plot (flip signs here if your mounting requires it)
+                x = np.clip(pitch, -xy_range, xy_range)
+                y = np.clip(roll, -xy_range, xy_range)
+
+                ball.set_data([x], [y])
+                fig.canvas.draw_idle()
+                if plt.fignum_exists(fig_ctrl.number):
+                    fig_ctrl.canvas.draw_idle()
+
+            plt.pause(0.01)
+            await asyncio.sleep(0.01)
+    finally:
+        with contextlib.suppress(Exception):
+            fig.canvas.mpl_disconnect(cid_key)
+        plt.ioff()
+        with contextlib.suppress(Exception):
+            plt.close(fig)
+        with contextlib.suppress(Exception):
+            plt.close(fig_ctrl)
+
 async def main():
     # Scan for sensors
     print("Scanning for Movella DOT sensors (5 seconds)...")
@@ -279,9 +370,11 @@ async def main():
         print("\nStarting measurements on all sensors...")
         await asyncio.gather(*(sensor.start_measurement() for sensor in sensors))
 
-        print("\nOpening live tilt plot (press 'c' to calibrate). Close window to stop.")
+        print("\nOpening tilt ball plot (press 'c' to calibrate). Close window to stop.")
         stop_plot = asyncio.Event()
-        plot_task = asyncio.create_task(live_plot_tilt_from_quat(sensors[0], stop_plot, window_seconds=10.0, show_yaw=False))
+        plot_task = asyncio.create_task(
+            live_plot_ball_from_quat(sensors[0], stop_plot, xy_range=30.0)
+        )
 
         try:
             await plot_task
