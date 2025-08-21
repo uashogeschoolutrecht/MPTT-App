@@ -116,8 +116,8 @@ python examples/multi_dot_demo.py
 # High-frequency dynamic motion configuration
 config = SensorConfiguration(
     output_rate=OutputRate.RATE_60,
-    filter_profile=FilterProfile.DYNAMIC,
-    payload_mode=PayloadMode.CUSTOM_MODE_5  # Full motion data
+    filter_profile=FilterProfile.GENERAL,
+    payload_mode=PayloadMode.ORIENTATION_EULER  # Full motion data
 )
 
 # Basic orientation tracking configuration
