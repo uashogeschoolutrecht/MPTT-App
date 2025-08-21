@@ -236,18 +236,21 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     # Live degree text at the top of the control window
     text_deg = fig_ctrl.text(0.5, 0.9, 'L/R: +0.0°, F/B: +0.0°', ha='center', va='center', fontsize=12)
     # Settings text at bottom
-    text_settings = fig_ctrl.text(0.5, 0.05, 'Range: ±30°, Filter: OFF, N=5', ha='center', va='center', fontsize=10)
+    text_settings = fig_ctrl.text(0.5, 0.05, 'Range: ±30°, Filter: OFF, N=5, Target: 60s', ha='center', va='center', fontsize=10)
 
     # Buttons: Calibrate, Exit, Range -, Range +
     ax_cal   = fig_ctrl.add_axes([0.03, 0.25, 0.14, 0.5])
     ax_exit  = fig_ctrl.add_axes([0.19, 0.25, 0.14, 0.5])
     ax_rminus = fig_ctrl.add_axes([0.35, 0.25, 0.14, 0.5])
     ax_rplus  = fig_ctrl.add_axes([0.51, 0.25, 0.14, 0.5])
+    # Start/Stop toggle (compact) — placed before filter controls
+    ax_run   = fig_ctrl.add_axes([0.60, 0.25, 0.07, 0.5])
 
     btn_cal   = Button(ax_cal, 'Calibrate')
     btn_exit  = Button(ax_exit, 'Exit')
     btn_rminus = Button(ax_rminus, 'Range -')
     btn_rplus  = Button(ax_rplus, 'Range +')
+    btn_run    = Button(ax_run, 'Stop')  # initial state: running
 
     # Filter controls: toggle and window slider
     ax_filter_toggle = fig_ctrl.add_axes([0.68, 0.25, 0.10, 0.5])
@@ -255,6 +258,10 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
 
     ax_filter_size = fig_ctrl.add_axes([0.80, 0.35, 0.18, 0.2])
     s_win = Slider(ax_filter_size, 'N', 3, 150, valinit=5, valstep=1)
+
+    # Target duration slider (seconds)
+    ax_target_time = fig_ctrl.add_axes([0.80, 0.10, 0.18, 0.2])
+    s_target = Slider(ax_target_time, 'Target T (s)', 30, 120, valinit=60, valstep=1)
 
     calib_q = None
     pending_calibration = False  # apply calibration on next fresh sample
@@ -267,15 +274,39 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     buf_roll = deque(maxlen=int(s_win.val))
     buf_pitch = deque(maxlen=int(s_win.val))
 
+    # Animation state
+    is_running = True
+    theta_current = 0.0  # current parameter along the path [0, 2π)
+
+    # Reference path (r = 2cos(2θ)) scaled to current range, and moving green target dot
+    num_path_pts = 1000
+
+    def compute_path_arrays(range_val: float):
+        # Use full [0, 2π] for a closed four-petal rose; scale so max radius equals current_range
+        theta = np.linspace(0.0, 2.0 * np.pi, num_path_pts)
+        r = range_val * np.cos(2.0 * theta)
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        return theta, x, y
+
+    theta_path, x_path, y_path = compute_path_arrays(current_range)
+    path_line, = ax.plot(x_path, y_path, color='green', lw=1.2, alpha=0.35)
+    target_dot, = ax.plot([x_path[0]], [y_path[0]], 'o', color='green', markersize=12, alpha=0.9)
+
+    t0 = time.monotonic()
+
     def set_range(new_range: float):
-        nonlocal current_range
+        nonlocal current_range, theta_path, x_path, y_path
         new_range = float(np.clip(new_range, min_range, max_range))
         if new_range == current_range:
             return
         current_range = new_range
         ax.set_xlim(-current_range, current_range)
         ax.set_ylim(-current_range, current_range)
-        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}")
+        # Update reference path for new range
+        theta_path, x_path, y_path = compute_path_arrays(current_range)
+        path_line.set_data(x_path, y_path)
+        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
         fig.canvas.draw_idle()
 
     def do_calibrate(_evt=None):
@@ -297,15 +328,28 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     def do_plus(_evt=None):
         set_range(current_range + step)
 
+    def on_toggle_run(_evt=None):
+        nonlocal is_running, t0, theta_current
+        is_running = not is_running
+        if is_running:
+            # resume from current theta position
+            period = max(1.0, float(s_target.val))
+            t0 = time.monotonic() - (theta_current / (2.0 * np.pi)) * period
+            btn_run.label.set_text('Stop')
+        else:
+            btn_run.label.set_text('Start')
+        fig_ctrl.canvas.draw_idle()
+
     btn_cal.on_clicked(do_calibrate)
     btn_exit.on_clicked(do_exit)
     btn_rminus.on_clicked(do_minus)
     btn_rplus.on_clicked(do_plus)
+    btn_run.on_clicked(on_toggle_run)
 
     def on_filter_toggle(_label):
         # Reset buffers when toggling to avoid mixing states
         buf_roll.clear(); buf_pitch.clear()
-        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}")
+        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
         fig_ctrl.canvas.draw_idle()
 
     def on_filter_size(val):
@@ -314,11 +358,17 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         buf_roll.clear(); buf_pitch.clear()
         buf_roll.maxlen = size
         buf_pitch.maxlen = size
-        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={size}")
+        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={size}, Target: {int(s_target.val)}s")
+        fig_ctrl.canvas.draw_idle()
+
+    def on_target_duration(val):
+        # Only text update; motion uses slider value each frame
+        text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(val)}s")
         fig_ctrl.canvas.draw_idle()
 
     chk.on_clicked(on_filter_toggle)
     s_win.on_changed(on_filter_size)
+    s_target.on_changed(on_target_duration)
 
     # Keyboard shortcuts (bind to both figures)
     def on_key(event):
@@ -326,13 +376,31 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
             do_calibrate()
         elif event.key in ('q', 'escape'):
             do_exit()
+        elif event.key in ('p',):
+            on_toggle_run()
 
     cid_key = fig.canvas.mpl_connect('key_press_event', on_key)
     cid_key_ctrl = fig_ctrl.canvas.mpl_connect('key_press_event', on_key)
 
     try:
         while not stop_event.is_set() and plt.fignum_exists(fig.number):
-            data = sensor.get_collected_data()
+            # Update moving green target dot along reference path
+            period = max(1.0, float(s_target.val))
+            if is_running:
+                now = time.monotonic()
+                elapsed = (now - t0) % period
+                theta_current = (elapsed / period) * (2.0 * np.pi)  # traverse full [0, 2π]
+            # Compute target position for current theta
+            r_t = current_range * np.cos(2.0 * theta_current)
+            x_t = r_t * np.cos(theta_current)
+            y_t = r_t * np.sin(theta_current)
+            target_dot.set_data([x_t], [y_t])
+
+            if is_running:
+                data = sensor.get_collected_data()
+            else:
+                data = None
+
             if data and len(data.get('quaternions', [])) > 0:
                 q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
                 q_cur = _quat_normalize(q_cur)
@@ -364,11 +432,12 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
 
                 # Update readouts
                 text_deg.set_text(f"L/R: {roll_f:+.1f}°, F/B: {pitch_f:+.1f}°")
-                text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}")
+                text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
 
-                fig.canvas.draw_idle()
-                if plt.fignum_exists(fig_ctrl.number):
-                    fig_ctrl.canvas.draw_idle()
+            # Draw updates (both figures if present)
+            fig.canvas.draw_idle()
+            if plt.fignum_exists(fig_ctrl.number):
+                fig_ctrl.canvas.draw_idle()
 
             plt.pause(0.01)
             await asyncio.sleep(0.01)
