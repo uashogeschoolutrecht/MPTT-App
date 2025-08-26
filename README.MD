@@ -24,7 +24,7 @@ This repo is a standalone copy. It does not track the original as an upstream re
 - Windows 10 or higher (for BLE support) or mac os
 - Movella DOT sensor(s)
 
-## Quickstart (macOS / zsh)
+## Quickstart (macOS / zsh) @anton do windows pls
 
 1) Create a virtual environment and activate it
 ```bash
