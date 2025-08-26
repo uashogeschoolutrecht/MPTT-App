@@ -1,77 +1,78 @@
-# Movella DOT Python SDK
+# Preface
 
-A Python SDK for interfacing with Movella DOT sensors via Bluetooth Low Energy (BLE). This package provides a simple and intuitive way to connect to, configure, and collect data from Movella DOT sensors.
+This repository is an research-specific adaptation of the "Movella DOT Python SDK" originally authored by the upstream project maintainers. We acknowledge and thank the original authors for their work.
 
-## Features
+Original project: [https://github.com/jiminghe/Xsens_DOT_PC_Reader](https://github.com/jiminghe/Xsens_DOT_PC_Reader)
 
-- BLE connection and device discovery
-- Multiple sensor support
-- Real-time data streaming
-- Various payload modes for different data types
-- Configurable output rates and filter profiles
-- Device information and status monitoring
-- Battery status monitoring
-- Power management features
+What we changed or added for our use case:
+- Interactive tilt-ball demo for quaternion payloads in `examples/multi_dot_demo.py`:
+  - Live 2D ball showing tilt derived from orientation quaternions
+  - One-click calibration, keyboard shortcuts
+  - Start/Stop toggle, adjustable range, optional moving-average filter with window size
+  - Moving target path and live absolute error plot for quick training/feedback
+- Safer connect/measure/cleanup flow with robust try/finally and graceful shutdown
+- Defaults simplified to 1 sensor to reduce BLE contention; easily adjustable
+- Mac-friendly quickstart and troubleshooting notes below
+
+
+
+This repo is a standalone copy. It does not track the original as an upstream remote. If we need upstream updates later, we will re-import or manually port changes.
 
 ## Requirements
 
 - Python 3.7 or higher
-- Windows 10 or higher (for BLE support)
+- Windows 10 or higher (for BLE support) or mac os
 - Movella DOT sensor(s)
 
-## Installation
+## Quickstart (macOS / zsh)
 
-1. Create and activate a virtual environment (recommended):
+1) Create a virtual environment and activate it
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-2. Install required packages:
+2) Install dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Install the package:
+3) Run the spiral tracking app.
 ```bash
-pip install -e .
+python movella_dot_py/app/spiral_tracking.py
 ```
+Controls:
+- Calibrate: button or press c / space
+- Exit: button or press q / esc
+- Range +/-: adjust plot limits
+- Filter: toggle plus window size slider
+- Start/Stop: toggle motion of the green target path
 
-## Requirements.txt
-```
-bleak>=0.22.3
-numpy>=1.24.4
-```
+Tested with Python 3.10+ on macOS. BLE uses CoreBluetooth via Bleak.
 
-## Usage
+## Roadmap / TODO
+- Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
+- Session logging to CSV:
+  - Record raw sensor data (calibrated degrees dissplacement from ofset.)
+  - Target trajectory per-sample, absolute error per-sample, and end-of-trial summary error
+  - Subject info (ID, handedness, notes) and measurement metadata (timestamps, output rate, filter profile, firmware, device IDs)
+  - Configurable output directory and file rotation
+- Better UI:
+  - Cleaner single-window mode with resizable panels. or not and we keep two windows. UP to Meta. 
+- Multiple target paths with noise:
+  - Select among spiral/rose/square/line paths
+  - Optional noise/jitter and variable speed profiles
+- Target mask options:
+  - Configurable square mask for the target area (size, color, opacity)
+  - Efficient redraws for smooth animation
+- Misc enhancements:
+  - Multi-sensor support, but you select which one to connect to. 
+  - CLI flags and/or YAML config for rates, profiles, filters, and paths
+  - Packaging/CI improvements
+  - etc.
 
-### Basic Example
 
-```python
-from movella_dot_py.core.sensor import MovellaDOTSensor
-from movella_dot_py.models.data_structures import SensorConfiguration
-from movella_dot_py.models.enums import OutputRate, FilterProfile, PayloadMode
-
-# Create configuration
-config = SensorConfiguration(
-    output_rate=OutputRate.RATE_60,
-    filter_profile=FilterProfile.GENERAL,
-    payload_mode=PayloadMode.COMPLETE_EULER
-)
-
-# Create sensor instance
-sensor = MovellaDOTSensor(config)
-```
-
-### Running the Demo
-
-The package includes a comprehensive demo script that shows how to work with multiple sensors:
-
-```bash
-python examples/multi_dot_demo.py
-```
-
-## Configuration Options
+## Configuration Options of originalsoftware. 
 
 ### Output Rates (OutputRate)
 - `RATE_1`: 1 Hz
