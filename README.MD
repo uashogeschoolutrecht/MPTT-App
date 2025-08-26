@@ -51,20 +51,18 @@ Controls:
 Tested with Python 3.10+ on macOS. BLE uses CoreBluetooth via Bleak.
 
 ## Roadmap / TODO
+- rename everything to Motorische Precisie en ProprioceptieTest (MPTT) just call it MPTT-App
 - Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
 - Session logging to CSV:
   - Record raw sensor data (calibrated degrees dissplacement from ofset.)
-  - Target trajectory per-sample, absolute error per-sample, and end-of-trial summary error
+  - Target trajectory per-sample, absolute error per-sample, and end-of-trial summary error (mean and path(sum))
   - Subject info (ID, handedness, notes) and measurement metadata (timestamps, output rate, filter profile, firmware, device IDs)
   - Configurable output directory and file rotation
-- Better UI:
-  - Cleaner single-window mode with resizable panels. or not and we keep two windows. UP to Meta. 
-- Multiple target paths with noise:
-  - Select among spiral/rose/square/line paths
-  - Optional noise/jitter and variable speed profiles
-- Target mask options:
-  - Configurable square mask for the target area (size, color, opacity)
-  - Efficient redraws for smooth animation
+- 5 second currecnt position dissapear:
+  - period adjustable. 
+  - set flag in log data, 
+  - add extra log file with only that data, and summary of the measurement. 
+
 - Misc enhancements:
   - Multi-sensor support, but you select which one to connect to. 
   - CLI flags and/or YAML config for rates, profiles, filters, and paths
