@@ -39,7 +39,7 @@ pip install -r requirements.txt
 
 3) Run the spiral tracking app.
 ```bash
-python movella_dot_py/app/spiral_tracking.py
+python app/spiral_tracking.py
 ```
 Controls:
 - Calibrate: button or press c / space
