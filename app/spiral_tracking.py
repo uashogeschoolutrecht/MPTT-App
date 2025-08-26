@@ -344,14 +344,14 @@ async def main():
         print("No Movella DOT sensors found")
         return
         
-    # Limit to maximum 5 sensors
+    # Limit to maximum 1 sensor
+    # Should implement multi-sensor support in the future, to select the sensor to use.
     max_sensors = 1
     dot_devices = dot_devices[:max_sensors]
     print(f"Found {len(dot_devices)} Movella DOT sensors")
     
     # Create sensor instances
     sensors = []
-    # Change to your desired values.
     config = SensorConfiguration(
         output_rate=OutputRate.RATE_30,
         filter_profile=FilterProfile.GENERAL,
