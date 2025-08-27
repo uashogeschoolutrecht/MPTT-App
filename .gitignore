@@ -5,3 +5,4 @@
 /movella_dot_py.egg-info/
 *.venv/
 *src/movella-dot-py/
+*data
