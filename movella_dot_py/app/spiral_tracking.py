@@ -6,8 +6,11 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import contextlib
-from matplotlib.widgets import Button, Slider, CheckButtons
+from matplotlib.widgets import Button, Slider, CheckButtons, TextBox
 from collections import deque
+import csv
+from datetime import datetime
+from pathlib import Path
 
 
 # Add the parent directory to the Python path
@@ -60,6 +63,118 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 
     return np.array([roll, pitch, yaw], dtype=np.float64)
 
+class DataLogger:
+    """Handles CSV logging of sensor data, target trajectory, and error calculations"""
+    
+    def __init__(self, patient_id: str = "9999"):
+        self.patient_id = patient_id
+        self.session_start_time = datetime.now()
+        self.data_buffer = []
+        self.csv_file = None
+        self.csv_writer = None
+        self.session_start_monotonic = time.monotonic()
+        
+        # Create data directory structure
+        self.data_dir = Path("data")
+        self.patient_dir = self.data_dir / self.patient_id
+        self.patient_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create unique CSV filename with timestamp
+        timestamp_str = self.session_start_time.strftime("%Y%m%d_%H%M%S")
+        self.csv_filename = f"{self.patient_id}_{timestamp_str}.csv"
+        self.csv_filepath = self.patient_dir / self.csv_filename
+        
+        print(f"Data logger initialized for patient {patient_id}")
+        print(f"Will save to: {self.csv_filepath}")
+    
+    def start_session(self, sensor_info=None):
+        """Start a new logging session"""
+        try:
+            self.csv_file = open(self.csv_filepath, 'w', newline='', encoding='utf-8')
+            self.csv_writer = csv.writer(self.csv_file)
+            
+            # Write CSV header
+            header = [
+                 'system_timestamp',
+                 'quat_w', 'quat_x', 'quat_y', 'quat_z',
+                 'euler_roll_raw', 'euler_pitch_raw', 'euler_yaw_raw',
+                 'calibrated_roll_deg', 'calibrated_pitch_deg',
+                 'filtered_roll_deg', 'filtered_pitch_deg',
+                 'target_x_deg', 'target_y_deg', 'target_phase',
+                 'user_x_deg', 'user_y_deg',
+                 'error_distance_deg', 'error_x_deg', 'error_y_deg',
+                 'range_setting', 'filter_enabled', 'target_speed_setting'
+             ]
+            self.csv_writer.writerow(header)
+            
+            # Write session metadata as comments
+            self.csv_file.write(f"# Session started: {self.session_start_time.isoformat()}\n")
+            self.csv_file.write(f"# Patient ID: {self.patient_id}\n")
+            if sensor_info:
+                self.csv_file.write(f"# Device: {sensor_info.get('name', 'Unknown')}\n")
+                self.csv_file.write(f"# Address: {sensor_info.get('address', 'Unknown')}\n")
+            self.csv_file.write(f"# \n")
+            
+            self.csv_file.flush()
+            print(f"Started logging session to {self.csv_filepath}")
+            
+        except Exception as e:
+            print(f"Error starting data logger: {e}")
+    
+    def log_sample(self, timestamp, quaternion, euler_raw, calibrated_angles, filtered_angles, 
+                   target_pos, user_pos, error_data, config):
+        """Log a single data sample"""
+        if not self.csv_writer:
+            return
+            
+        try:
+            # Use current datetime instead of converting from timestamp
+            system_timestamp = datetime.now().isoformat()
+            
+            # Unpack data
+            x_t, y_t, theta_current = target_pos
+            x, y = user_pos
+            err, err_x, err_y = error_data
+            roll_raw, pitch_raw, yaw_raw = euler_raw
+            roll_cal, pitch_cal = calibrated_angles
+            roll_filt, pitch_filt = filtered_angles
+            
+            row = [
+                system_timestamp,
+                quaternion[0], quaternion[1], quaternion[2], quaternion[3],
+                roll_raw, pitch_raw, yaw_raw,
+                roll_cal, pitch_cal,
+                roll_filt, pitch_filt,
+                x_t, y_t, theta_current,
+                x, y,
+                err, err_x, err_y,
+                config['range'], config['filter_enabled'], config['target_speed']
+            ]
+            
+            self.csv_writer.writerow(row)
+            
+            # Flush periodically to ensure data is saved
+            if len(row) % 100 == 0:  # Every 100 samples
+                self.csv_file.flush()
+                
+        except Exception as e:
+            print(f"Error logging sample: {e}")
+    
+    def end_session(self):
+        """End the logging session and close files"""
+        if self.csv_file:
+            try:
+                # Write session summary
+                session_duration = time.monotonic() - self.session_start_monotonic
+                self.csv_file.write(f"# Session ended: {datetime.now().isoformat()}\n")
+                self.csv_file.write(f"# Duration: {session_duration:.1f} seconds\n")
+                
+                self.csv_file.close()
+                print(f"Session ended. Data saved to {self.csv_filepath}")
+                print(f"Duration: {session_duration:.1f} seconds")
+            except Exception as e:
+                print(f"Error closing data logger: {e}")
+
 async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio.Event, xy_range: float = 30.0):
     """Live 2D ball showing tilt from quaternion stream with calibration.
     X = Forward/Backward (pitch, deg), Y = Left/Right (roll, deg).
@@ -80,13 +195,19 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     ball, = ax.plot([0], [0], 'o', color='red', markersize=18)
 
     # Control window with buttons, live degree readout, and filter controls
-    fig_ctrl = plt.figure(figsize=(8.5, 2.6))
+    fig_ctrl = plt.figure(figsize=(10, 3.0))
     fig_ctrl.canvas.manager.set_window_title('Controls') if hasattr(fig_ctrl.canvas.manager, 'set_window_title') else None
 
+    # Patient ID input field at the top
+    ax_patient_id = fig_ctrl.add_axes([0.02, 0.85, 0.15, 0.10])
+    patient_id_box = TextBox(ax_patient_id, 'Patient ID: ', initial="9999")
+    
     # Live degree text at the top of the control window
     text_deg = fig_ctrl.text(0.5, 0.9, 'L/R: +0.0°, F/B: +0.0°', ha='center', va='center', fontsize=12)
     # Settings text at bottom
     text_settings = fig_ctrl.text(0.5, 0.05, 'Range: ±30°, Filter: OFF, N=5, Target: 60s', ha='center', va='center', fontsize=10)
+    # Recording status text
+    text_recording = fig_ctrl.text(0.85, 0.9, 'Recording: OFF', ha='center', va='center', fontsize=10, color='red')
 
     # Buttons: Calibrate, Exit, Range -, Range +
     ax_cal   = fig_ctrl.add_axes([0.03, 0.25, 0.14, 0.5])
@@ -100,7 +221,7 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     btn_exit  = Button(ax_exit, 'Exit')
     btn_rminus = Button(ax_rminus, 'Range -')
     btn_rplus  = Button(ax_rplus, 'Range +')
-    btn_run    = Button(ax_run, 'Stop')  # initial state: running
+    btn_run    = Button(ax_run, 'Start')  # initial state: paused
 
     # Filter controls: toggle and window slider
     ax_filter_toggle = fig_ctrl.add_axes([0.68, 0.25, 0.10, 0.5])
@@ -119,6 +240,10 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     step = 5.0
     min_range = 5.0
     max_range = 180.0
+    
+    # Data logging variables
+    data_logger = None
+    logging_active = False
 
     # Error plot (absolute error in degrees) — small axes in control window
     err_window_sec = 30.0
@@ -137,7 +262,7 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     buf_pitch = deque(maxlen=int(s_win.val))
 
     # Animation state
-    is_running = True
+    is_running = False  # Start paused so user can enter patient ID first
     theta_current = 0.0  # current parameter along the path [0, 2π)
 
     # Reference path (r = 2cos(2θ)) scaled to current range, and moving green target dot
@@ -179,8 +304,14 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         print('Will calibrate to center on next sample...')
 
     def do_exit(_evt=None):
+        nonlocal data_logger
         stop_event.set()
         print('Exiting plot...')
+        
+        # End data logging session
+        if data_logger:
+            data_logger.end_session()
+        
         with contextlib.suppress(Exception):
             plt.close(fig)
         with contextlib.suppress(Exception):
@@ -193,22 +324,44 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         set_range(current_range + step)
 
     def on_toggle_run(_evt=None):
-        nonlocal is_running, t0, theta_current
+        nonlocal is_running, t0, theta_current, data_logger, logging_active
         is_running = not is_running
         if is_running:
             # resume from current theta position
             period = max(1.0, float(s_target.val))
             t0 = time.monotonic() - (theta_current / (2.0 * np.pi)) * period
             btn_run.label.set_text('Stop')
+            
+            # Start data logging
+            patient_id = patient_id_box.text.strip() or "9999"
+            if not data_logger:
+                data_logger = DataLogger(patient_id)
+                sensor_info = {
+                    'name': getattr(sensor, '_device_name', 'Unknown'),
+                    'address': getattr(sensor, '_device_address', 'Unknown')
+                }
+                data_logger.start_session(sensor_info)
+            logging_active = True
+            text_recording.set_text('Recording: ON')
+            text_recording.set_color('green')
         else:
             btn_run.label.set_text('Start')
+            # Pause logging (don't end session, just pause)
+            logging_active = False
+            text_recording.set_text('Recording: PAUSED')
+            text_recording.set_color('orange')
         fig_ctrl.canvas.draw_idle()
 
-    btn_cal.on_clicked(do_calibrate)
-    btn_exit.on_clicked(do_exit)
-    btn_rminus.on_clicked(do_minus)
-    btn_rplus.on_clicked(do_plus)
-    btn_run.on_clicked(on_toggle_run)
+    # Connect button events with error handling for matplotlib mouse grab issues
+    try:
+        btn_cal.on_clicked(do_calibrate)
+        btn_exit.on_clicked(do_exit)
+        btn_rminus.on_clicked(do_minus)
+        btn_rplus.on_clicked(do_plus)
+        btn_run.on_clicked(on_toggle_run)
+    except Exception as e:
+        print(f"Warning: Error connecting button events: {e}")
+        print("Buttons may not respond properly. Try using keyboard shortcuts instead.")
 
     def on_filter_toggle(_label):
         # Reset buffers when toggling to avoid mixing states
@@ -230,9 +383,14 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(val)}s")
         fig_ctrl.canvas.draw_idle()
 
-    chk.on_clicked(on_filter_toggle)
-    s_win.on_changed(on_filter_size)
-    s_target.on_changed(on_target_duration)
+    # Connect widget events with error handling
+    try:
+        chk.on_clicked(on_filter_toggle)
+        s_win.on_changed(on_filter_size)
+        s_target.on_changed(on_target_duration)
+    except Exception as e:
+        print(f"Warning: Error connecting widget events: {e}")
+        print("Sliders and checkboxes may not respond properly.")
 
     # Keyboard shortcuts (bind to both figures)
     def on_key(event):
@@ -243,8 +401,15 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
         elif event.key in ('p',):
             on_toggle_run()
 
-    cid_key = fig.canvas.mpl_connect('key_press_event', on_key)
-    cid_key_ctrl = fig_ctrl.canvas.mpl_connect('key_press_event', on_key)
+    # Connect keyboard events with error handling
+    cid_key = None
+    cid_key_ctrl = None
+    try:
+        cid_key = fig.canvas.mpl_connect('key_press_event', on_key)
+        cid_key_ctrl = fig_ctrl.canvas.mpl_connect('key_press_event', on_key)
+    except Exception as e:
+        print(f"Warning: Error connecting keyboard events: {e}")
+        print("Keyboard shortcuts may not work properly.")
 
     try:
         while not stop_event.is_set() and plt.fignum_exists(fig.number):
@@ -301,6 +466,30 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
                 # Update error plot (absolute Euclidean error in degrees)
                 now_t = time.monotonic()
                 err = float(np.hypot(x - x_t, y - y_t))
+                err_x = float(x - x_t)
+                err_y = float(y - y_t)
+                
+                # Log data if recording is active
+                if logging_active and data_logger:
+                     # Get raw euler angles from current quaternion
+                     euler_raw = _quat_to_euler_deg(q_cur)
+                     
+                     data_logger.log_sample(
+                         timestamp=now_t,
+                         quaternion=q_cur,
+                         euler_raw=euler_raw,
+                         calibrated_angles=(roll, pitch),
+                         filtered_angles=(roll_f, pitch_f),
+                         target_pos=(x_t, y_t, theta_current),
+                         user_pos=(x, y),
+                         error_data=(err, err_x, err_y),
+                         config={
+                             'range': current_range,
+                             'filter_enabled': chk.get_status()[0],
+                             'target_speed': int(s_target.val)
+                         }
+                     )
+                
                 err_times.append(now_t)
                 err_values.append(err)
                 # Drop old samples outside the window
@@ -320,10 +509,17 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
             plt.pause(0.01)
             await asyncio.sleep(0.01)
     finally:
+        # Ensure data logger is properly closed
+        if data_logger:
+            data_logger.end_session()
+            
+        # Disconnect event handlers safely
         with contextlib.suppress(Exception):
-            fig.canvas.mpl_disconnect(cid_key)
+            if cid_key:
+                fig.canvas.mpl_disconnect(cid_key)
         with contextlib.suppress(Exception):
-            fig_ctrl.canvas.mpl_disconnect(cid_key_ctrl)
+            if cid_key_ctrl:
+                fig_ctrl.canvas.mpl_disconnect(cid_key_ctrl)
         plt.ioff()
         with contextlib.suppress(Exception):
             plt.close(fig)
