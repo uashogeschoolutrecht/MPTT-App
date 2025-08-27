@@ -24,14 +24,34 @@ This repo is a standalone copy. It does not track the original as an upstream re
 - Windows 10 or higher (for BLE support) or mac os
 - Movella DOT sensor(s)
 
-## Quickstart (macOS / zsh) @anton do windows pls
+## Quickstart
+
+### Windows (PowerShell/Command Prompt)
+
+1) Create a virtual environment and activate it
+```cmd
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+2) Install dependencies
+```cmd
+pip install -r requirements.txt
+```
+
+3) Run the spiral tracking app
+```cmd
+python app/spiral_tracking.py
+```
+
+### macOS/Linux (bash/zsh)
 
 1) Create a virtual environment and activate it
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
-
+@Rins just double check. for windows i had to comment some command out to be able to run on windows in the requirements.txt
 2) Install dependencies
 ```bash
 pip install -r requirements.txt
