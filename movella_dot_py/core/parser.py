@@ -1,5 +1,5 @@
-from ..models.enums import PayloadMode
-from ..models.data_structures import (SensorData, Timestamp, Quaternion, 
+from models.enums import PayloadMode
+from models.data_structures import (SensorData, Timestamp, Quaternion, 
                                     EulerAngles, Vector3, MagneticField, Status)
 
 class PayloadParser:

@@ -1,7 +1,7 @@
 from typing import List
 import numpy as np
-from ..models.enums import PayloadMode
-from ..models.data_structures import SensorData
+from models.enums import PayloadMode
+from models.data_structures import SensorData
 from .parser import PayloadParser
 
 class SensorDataCollector:

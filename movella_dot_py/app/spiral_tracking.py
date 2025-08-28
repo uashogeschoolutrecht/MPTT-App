@@ -13,9 +13,9 @@ from collections import deque
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from movella_dot_py.core.sensor import MovellaDOTSensor
-from movella_dot_py.models.data_structures import SensorConfiguration
-from movella_dot_py.models.enums import OutputRate, FilterProfile, PayloadMode
+from core.sensor import MovellaDOTSensor
+from models.data_structures import SensorConfiguration
+from models.enums import OutputRate, FilterProfile, PayloadMode
 
 def _quat_normalize(q: np.ndarray) -> np.ndarray:
     q = np.asarray(q, dtype=np.float64)
@@ -43,13 +43,13 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
     roll: x (left/right), pitch: y (forward/backward), yaw: z (twist)
     """
     w, x, y, z = q
-    # roll (x-axis rotation)
-    sinr_cosp = 2.0 * (w*x + y*z)
+    # roll (x-axis rotation) - negated to match sensor convention
+    sinr_cosp = -2.0 * (w*x + y*z)
     cosr_cosp = 1.0 - 2.0 * (x*x + y*y)
     roll = np.degrees(np.arctan2(sinr_cosp, cosr_cosp))
 
-    # pitch (y-axis rotation)
-    sinp = 2.0 * (w*y - z*x)
+    # pitch (y-axis rotation) - negated to match sensor convention
+    sinp = -2.0 * (w*y - z*x)
     sinp = np.clip(sinp, -1.0, 1.0)
     pitch = np.degrees(np.arcsin(sinp))
 
@@ -62,7 +62,7 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 
 async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio.Event, xy_range: float = 30.0):
     """Live 2D ball showing tilt from quaternion stream with calibration.
-    X = Forward/Backward (pitch, deg), Y = Left/Right (roll, deg).
+    X = Left/Right (roll, deg), Y = Forward/Backward (pitch, deg).
     Controls: Calibrate, Exit, Range -, Range +, Filter toggle and size. Shows current L/R, F/B and settings.
     Keyboard: c/space = calibrate to center (next sample), q/esc = exit.
     """
@@ -176,7 +176,7 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     def do_calibrate(_evt=None):
         nonlocal pending_calibration
         pending_calibration = True
-        print('Will calibrate to center on next sample...')
+        print('\nWill calibrate to center on next sample...')
 
     def do_exit(_evt=None):
         stop_event.set()
@@ -288,14 +288,18 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
                 else:
                     roll_f, pitch_f = roll, pitch
 
-                # Map to plot: X = pitch (F/B), Y = -roll (L/R)
-                x = np.clip(pitch_f, -current_range, current_range)
-                y = np.clip(-roll_f, -current_range, current_range)
+                # Map to plot: X = roll (L/R), Y = pitch (F/B)
+                x = np.clip(roll_f, -current_range, current_range)    # X gets roll (L/R)
+                y = np.clip(pitch_f, -current_range, current_range)   # Y gets pitch (F/B)
 
                 ball.set_data([x], [y])
 
                 # Update readouts
                 text_deg.set_text(f"L/R: {roll_f:+.1f}°, F/B: {pitch_f:+.1f}°")
+                
+                # Print quaternion and euler angles to terminal
+                print(f"Quat: [w:{q_cur[0]:+.3f}, x:{q_cur[1]:+.3f}, y:{q_cur[2]:+.3f}, z:{q_cur[3]:+.3f}] -> "
+                      f"Euler: X(roll):{roll_f:+.1f}°, Y(pitch):{pitch_f:+.1f}°, Z(yaw):{_yaw:+.1f}°", end='\r')
                 text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
 
                 # Update error plot (absolute Euclidean error in degrees)
