@@ -156,10 +156,10 @@ class MovellaDOTSensor:
                 parsed_data = self.data_collector.parser.parse(data)
                 self.data_collector.add_data(data)
                                 
-                if parsed_data.quaternion:
-                    print(f"Quaternion (w,x,y,z): {parsed_data.quaternion.w:.3f}, "
-                          f"{parsed_data.quaternion.x:.3f}, {parsed_data.quaternion.y:.3f}, "
-                          f"{parsed_data.quaternion.z:.3f}")
+                # if parsed_data.quaternion:
+                #     print(f"Quaternion (w,x,y,z): {parsed_data.quaternion.w:.3f}, "
+                #           f"{parsed_data.quaternion.x:.3f}, {parsed_data.quaternion.y:.3f}, "
+                #           f"{parsed_data.quaternion.z:.3f}")
                     
                 if parsed_data.euler_angles:
                     print(f"Euler (roll,pitch,yaw): {parsed_data.euler_angles.roll:.1f}°, "

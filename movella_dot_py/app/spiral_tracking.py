@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import contextlib
 from matplotlib.widgets import Button, Slider, CheckButtons
 from collections import deque
+from scipy.spatial.transform import Rotation as R
 
 
 # Add the parent directory to the Python path
@@ -60,9 +61,25 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 
     return np.array([roll, pitch, yaw], dtype=np.float64)
 
+def _quat_to_euler_scipy(q: np.ndarray) -> np.ndarray:
+    """Convert quaternion to euler angles using scipy library.
+    q: [w, x, y, z] format
+    Returns: [roll, pitch, yaw] in degrees
+    """
+    # scipy expects [x, y, z, w] format, so we need to reorder
+    q_scipy = [q[1], q[2], q[3], q[0]]  # [x, y, z, w]
+    
+    # Create rotation object and convert to euler angles
+    rotation = R.from_quat(q_scipy)
+    # Use 'xyz' convention (roll=x, pitch=y, yaw=z)
+    euler_rad = rotation.as_euler('xyz', degrees=False)
+    euler_deg = np.degrees(euler_rad)
+    
+    return euler_deg  # [roll, pitch, yaw]
+
 async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio.Event, xy_range: float = 30.0):
     """Live 2D ball showing tilt from quaternion stream with calibration.
-    X = Left/Right (roll, deg), Y = Forward/Backward (pitch, deg).
+    X = Raw Roll output, Y = Raw Pitch output (no coordinate system corrections).
     Controls: Calibrate, Exit, Range -, Range +, Filter toggle and size. Shows current L/R, F/B and settings.
     Keyboard: c/space = calibrate to center (next sample), q/esc = exit.
     """
@@ -76,8 +93,10 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
     ax.grid(True, linestyle=':', alpha=0.5)
     ax.axhline(0, color='k', lw=0.5)
     ax.axvline(0, color='k', lw=0.5)
+    ax.legend(loc='upper right', fontsize=10)
 
-    ball, = ax.plot([0], [0], 'o', color='red', markersize=18)
+    ball, = ax.plot([0], [0], 'o', color='red', markersize=18, label='Manual Calc')
+    ball_scipy, = ax.plot([0], [0], 'o', color='blue', markersize=14, alpha=0.7, label='Scipy Calc')
 
     # Control window with buttons, live degree readout, and filter controls
     fig_ctrl = plt.figure(figsize=(8.5, 2.6))
@@ -277,29 +296,50 @@ async def live_plot_ball_from_quat(sensor: MovellaDOTSensor, stop_event: asyncio
                 # Relative rotation
                 q_rel = _quat_mul(q_cur, _quat_conj(calib_q))
                 q_rel = _quat_normalize(q_rel)
-                roll, pitch, _yaw = _quat_to_euler_deg(q_rel)
+                
+                # Manual calculation - RAW output
+                roll_raw, pitch_raw, _yaw = _quat_to_euler_deg(q_rel)
+                
+                # Scipy calculation - RAW output
+                roll_scipy, pitch_scipy, yaw_scipy = _quat_to_euler_scipy(q_rel)
 
-                # Apply moving average if enabled
+                # Use raw values directly (no coordinate system correction)
+                roll = roll_raw
+                pitch = pitch_raw
+                roll_scipy_f = roll_scipy
+                pitch_scipy_f = pitch_scipy
+
+                # Apply moving average if enabled (on raw values)
                 if chk.get_status()[0]:
                     buf_roll.append(roll)
                     buf_pitch.append(pitch)
                     roll_f = np.mean(buf_roll) if len(buf_roll) > 0 else roll
                     pitch_f = np.mean(buf_pitch) if len(buf_pitch) > 0 else pitch
+                    
+                    # For scipy values, no filtering for now to see pure difference
+                    # roll_scipy_f and pitch_scipy_f already set above
                 else:
                     roll_f, pitch_f = roll, pitch
+                    # roll_scipy_f and pitch_scipy_f already set above
 
                 # Map to plot: X = roll (L/R), Y = pitch (F/B)
                 x = np.clip(roll_f, -current_range, current_range)    # X gets roll (L/R)
                 y = np.clip(pitch_f, -current_range, current_range)   # Y gets pitch (F/B)
+                
+                # Scipy values for blue ball
+                x_scipy = np.clip(roll_scipy_f, -current_range, current_range)
+                y_scipy = np.clip(pitch_scipy_f, -current_range, current_range)
 
                 ball.set_data([x], [y])
+                ball_scipy.set_data([x_scipy], [y_scipy])
 
                 # Update readouts
-                text_deg.set_text(f"L/R: {roll_f:+.1f}°, F/B: {pitch_f:+.1f}°")
+                text_deg.set_text(f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°")
                 
-                # Print quaternion and euler angles to terminal
-                print(f"Quat: [w:{q_cur[0]:+.3f}, x:{q_cur[1]:+.3f}, y:{q_cur[2]:+.3f}, z:{q_cur[3]:+.3f}] -> "
-                      f"Euler: X(roll):{roll_f:+.1f}°, Y(pitch):{pitch_f:+.1f}°, Z(yaw):{_yaw:+.1f}°", end='\r')
+                # Print both calculations to terminal
+                print(f"Manual: Roll:{roll_f:+.1f}°, Pitch:{pitch_f:+.1f}° | "
+                      f"Scipy: Roll:{roll_scipy_f:+.1f}°, Pitch:{pitch_scipy_f:+.1f}° | "
+                      f"Diff: Roll:{abs(roll_f-roll_scipy_f):.1f}°, Pitch:{abs(pitch_f-pitch_scipy_f):.1f}°", end='\r')
                 text_settings.set_text(f"Range: ±{current_range:.0f}°, Filter: {'ON' if chk.get_status()[0] else 'OFF'}, N={int(s_win.val)}, Target: {int(s_target.val)}s")
 
                 # Update error plot (absolute Euclidean error in degrees)
