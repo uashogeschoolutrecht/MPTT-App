@@ -4,3 +4,4 @@
 *.pyc
 /movella_dot_py.egg-info/
 .venv
+results/*

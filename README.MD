@@ -50,6 +50,39 @@ Controls:
 
 Tested with Python 3.10+ on macOS. BLE uses CoreBluetooth via Bleak.
 
+# Spiral Tracking App
+
+This app connects to a Movella/Xsens DOT sensor via BLE and displays a tilt ball UI.
+
+## GUI
+
+The GUI is implemented with PySide6 and embeds a Matplotlib canvas. Async BLE is integrated with the Qt event loop via qasync.
+
+## Setup
+
+On macOS with zsh:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Run
+
+```sh
+python -m movella_dot_py.app.spiral_tracking
+```
+
+Keyboard shortcuts inside the window:
+- Calibrate button or press the button
+- Start/Stop toggles the animation
+- Exit closes the window
+
+## Notes
+- Ensure Bluetooth is enabled.
+- Some BLE functionality may require granting permissions on macOS.
+
 ## Roadmap / TODO
 - Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
 - Session logging to CSV:
