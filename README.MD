@@ -24,14 +24,34 @@ This repo is a standalone copy. It does not track the original as an upstream re
 - Windows 10 or higher (for BLE support) or mac os
 - Movella DOT sensor(s)
 
-## Quickstart (macOS / zsh)
+## Quickstart
+
+### Windows (PowerShell/Command Prompt)
+
+1) Create a virtual environment and activate it
+```cmd
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+2) Install dependencies
+```cmd
+pip install -r requirements.txt
+```
+
+3) Run the spiral tracking app
+```cmd
+python app/spiral_tracking.py
+```
+
+### macOS/Linux (bash/zsh)
 
 1) Create a virtual environment and activate it
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
-
+@Rins just double check. for windows i had to comment some command out to be able to run on windows in the requirements.txt
 2) Install dependencies
 ```bash
 pip install -r requirements.txt
@@ -39,7 +59,7 @@ pip install -r requirements.txt
 
 3) Run the spiral tracking app.
 ```bash
-python movella_dot_py/app/spiral_tracking.py
+python app/spiral_tracking.py
 ```
 Controls:
 - Calibrate: button or press c / space
@@ -84,20 +104,18 @@ Keyboard shortcuts inside the window:
 - Some BLE functionality may require granting permissions on macOS.
 
 ## Roadmap / TODO
+- rename everything to Motorische Precisie en ProprioceptieTest (MPTT) just call it MPTT-App
 - Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
 - Session logging to CSV:
   - Record raw sensor data (calibrated degrees dissplacement from ofset.)
-  - Target trajectory per-sample, absolute error per-sample, and end-of-trial summary error
+  - Target trajectory per-sample, absolute error per-sample, and end-of-trial summary error (mean and path(sum))
   - Subject info (ID, handedness, notes) and measurement metadata (timestamps, output rate, filter profile, firmware, device IDs)
   - Configurable output directory and file rotation
-- Better UI:
-  - Cleaner single-window mode with resizable panels. or not and we keep two windows. UP to Meta. 
-- Multiple target paths with noise:
-  - Select among spiral/rose/square/line paths
-  - Optional noise/jitter and variable speed profiles
-- Target mask options:
-  - Configurable square mask for the target area (size, color, opacity)
-  - Efficient redraws for smooth animation
+- 5 second currecnt position dissapear:
+  - period adjustable. 
+  - set flag in log data, 
+  - add extra log file with only that data, and summary of the measurement. 
+
 - Misc enhancements:
   - Multi-sensor support, but you select which one to connect to. 
   - CLI flags and/or YAML config for rates, profiles, filters, and paths

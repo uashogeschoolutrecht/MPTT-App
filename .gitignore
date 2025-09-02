@@ -5,3 +5,6 @@
 /movella_dot_py.egg-info/
 .venv
 results/*
+*.venv/
+*src/movella-dot-py/
+

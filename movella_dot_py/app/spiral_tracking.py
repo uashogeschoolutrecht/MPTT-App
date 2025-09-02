@@ -569,6 +569,10 @@ async def init_sensors() -> List[MovellaDOTSensor]:
     print(f"Using {len(dot_devices)} Movella DOT sensor(s)")
 
     sensors: List[MovellaDOTSensor] = []
+
+        
+
+
     config = SensorConfiguration(
         output_rate=OutputRate.RATE_30,
         filter_profile=FilterProfile.GENERAL,
