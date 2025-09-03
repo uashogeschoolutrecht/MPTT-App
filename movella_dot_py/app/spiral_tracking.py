@@ -269,7 +269,7 @@ class TiltBallWindow(QMainWindow):
         (self.target_dot,) = self.ax.plot([self.x_path[0]], [self.y_path[0]], 'o', color='green', markersize=10, alpha=0.9)
 
         # Balls
-        (self.ball,) = self.ax.plot([0], [0], 'o', color='red', markersize=12, label='Manual Calc')
+        (self.ball,) = self.ax.plot([0], [0], 'o', color='red', markersize=12, label='Subject')
         # Measurement path line (initially empty/hidden)
         (self.meas_line,) = self.ax.plot([], [], '-', color='orange', lw=1.5, alpha=0.85, label='Measurement Path')
         self.meas_line.set_visible(False)
@@ -470,6 +470,62 @@ class TiltBallWindow(QMainWindow):
         out_dir = os.path.join(base_dir, f"{ts}_S{subj}")
         os.makedirs(out_dir, exist_ok=True)
 
+        # Compute stats from collected samples
+        try:
+            t = np.asarray(self.samples_t, dtype=np.float64)
+            err = np.asarray(self.samples_err, dtype=np.float64)
+            x = np.asarray(self.samples_x, dtype=np.float64)
+            y = np.asarray(self.samples_y, dtype=np.float64)
+            tx = np.asarray(self.samples_tx, dtype=np.float64)
+            ty = np.asarray(self.samples_ty, dtype=np.float64)
+            duration = float(t[-1]) if len(t) > 0 else 0.0
+            auc_err = float(np.trapz(err, t)) if len(t) > 1 else 0.0  # deg*s
+            mean_err = float(np.mean(err)) if err.size else 0.0
+            median_err = float(np.median(err)) if err.size else 0.0
+            std_err = float(np.std(err, ddof=0)) if err.size else 0.0
+            rmse_err = float(np.sqrt(np.mean(err ** 2))) if err.size else 0.0
+            max_err = float(np.max(err)) if err.size else 0.0
+            p95_err = float(np.percentile(err, 95)) if err.size else 0.0
+            # Per-axis absolute error
+            ex = (x - tx); ey = (y - ty)
+            mae_x = float(np.mean(np.abs(ex))) if ex.size else 0.0
+            rmse_x = float(np.sqrt(np.mean(ex ** 2))) if ex.size else 0.0
+            mae_y = float(np.mean(np.abs(ey))) if ey.size else 0.0
+            rmse_y = float(np.sqrt(np.mean(ey ** 2))) if ey.size else 0.0
+            # Path lengths and average speeds
+            def _path_len(xx, yy):
+                if len(xx) < 2:
+                    return 0.0
+                dx = np.diff(xx); dy = np.diff(yy)
+                return float(np.sum(np.hypot(dx, dy)))
+            path_len_meas = _path_len(x, y)
+            path_len_target = _path_len(tx, ty)
+            avg_speed_meas = float(path_len_meas / duration) if duration > 0 else 0.0
+            avg_speed_target = float(path_len_target / duration) if duration > 0 else 0.0
+
+            stats_dict = {
+                "duration_s": duration,
+                "samples": int(len(t)),
+                "mean_error_deg": mean_err,
+                "median_error_deg": median_err,
+                "std_error_deg": std_err,
+                "rmse_error_deg": rmse_err,
+                "max_error_deg": max_err,
+                "p95_error_deg": p95_err,
+                "auc_error_deg_s": auc_err,
+                "mae_x_deg": mae_x,
+                "rmse_x_deg": rmse_x,
+                "mae_y_deg": mae_y,
+                "rmse_y_deg": rmse_y,
+                "path_length_meas_deg": path_len_meas,
+                "path_length_target_deg": path_len_target,
+                "avg_speed_meas_deg_s": avg_speed_meas,
+                "avg_speed_target_deg_s": avg_speed_target,
+            }
+        except Exception as e:
+            print(f"Failed to compute stats: {e}")
+            stats_dict = {}
+
         # Metadata
         device = getattr(self.sensor, "_device_name", None)
         address = getattr(self.sensor, "_device_address", None)
@@ -494,6 +550,7 @@ class TiltBallWindow(QMainWindow):
             "device_address": address,
             "device_tag": tag,
             "sensor_settings": cfg,
+            "stats": stats_dict,
             "columns": [
                 "t_s","roll_deg","pitch_deg","x_deg","y_deg","target_x_deg","target_y_deg","error_deg","q_w","q_x","q_y","q_z"
             ],
@@ -526,6 +583,39 @@ class TiltBallWindow(QMainWindow):
                 json.dump(meta, jf, indent=2)
         except Exception as e:
             print(f"Failed to write meta.json: {e}")
+
+        # Stats CSV
+        try:
+            stats_csv = os.path.join(out_dir, "stats.csv")
+            with open(stats_csv, "w", encoding="utf-8") as sf:
+                sf.write("metric,value\n")
+                for k, v in stats_dict.items():
+                    sf.write(f"{k},{v}\n")
+        except Exception as e:
+            print(f"Failed to write stats.csv: {e}")
+
+        # Save plots: full figure (both plots) and separate error plot
+        try:
+            # Ensure the measurement path is visible
+            self._finalize_measurement_path()
+            self.canvas.draw()
+            self.fig.savefig(os.path.join(out_dir, "plots.png"), dpi=150, bbox_inches='tight', facecolor='white')
+        except Exception as e:
+            print(f"Failed to save plots.png: {e}")
+        try:
+            # Save error plot alone using a lightweight Figure
+            fig_err = Figure(figsize=(7, 3), dpi=150)
+            ax_e = fig_err.add_subplot(111)
+            ax_e.set_title('Abs Error (deg)')
+            ax_e.set_xlabel('Time (s)')
+            ax_e.set_ylabel('Error (deg)')
+            ax_e.grid(True, linestyle=':', alpha=0.3)
+            if len(self.err_times) > 0:
+                ax_e.plot(list(self.err_times), list(self.err_values), color='tab:red', lw=1.0)
+                ax_e.set_xlim(0.0, float(self.err_window_sec))
+            fig_err.savefig(os.path.join(out_dir, "error_plot.png"), dpi=150, bbox_inches='tight', facecolor='white')
+        except Exception as e:
+            print(f"Failed to save error_plot.png: {e}")
 
         print(f"Saved results to: {out_dir}")
         self.btn_save.setText("Saved")
