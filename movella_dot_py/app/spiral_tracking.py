@@ -117,6 +117,8 @@ class TiltBallWindow(QMainWindow):
         self.samples_ty: List[float] = []
         self.samples_err: List[float] = []
         self.samples_quat: List[List[float]] = []  # [w,x,y,z]
+        # Blind flag per-sample
+        self.samples_blind: List[int] = []  # 1 if within blind window else 0
 
         # Moving average buffers
         self.buf_roll: deque = deque(maxlen=5)
@@ -129,6 +131,14 @@ class TiltBallWindow(QMainWindow):
         self.err_values: deque = deque()
         self.t0 = time.monotonic()
         self.theta_current = 0.0
+
+        # Blind segment configuration (UI-controlled)
+        self.blind_enabled = False
+        self.blind_duration_sec = 5.0
+        self.blind_start_sec = 5.0
+        # Snapshot used during an active run
+        self.active_blind_start: Optional[float] = None
+        self.active_blind_end: Optional[float] = None
 
         # Build UI
         central = QWidget(self)
@@ -201,6 +211,29 @@ class TiltBallWindow(QMainWindow):
         controls.addWidget(self.lbl_target)
         controls.addWidget(self.s_target)
 
+        # Blind segment controls
+        controls.addSpacing(6)
+        self.chk_blind = QCheckBox("Enable blind segment", self)
+        self.chk_blind.setChecked(False)
+        controls.addWidget(self.chk_blind)
+        self.lbl_blind_dur = QLabel("Blind duration = 5 s", self)
+        self.s_blind_dur = QSlider(Qt.Horizontal, self)
+        self.s_blind_dur.setRange(1, 60)
+        self.s_blind_dur.setValue(5)
+        self.s_blind_dur.setSingleStep(1)
+        controls.addWidget(self.lbl_blind_dur)
+        controls.addWidget(self.s_blind_dur)
+        self.lbl_blind_start = QLabel("Blind start @ 5 s", self)
+        self.s_blind_start = QSlider(Qt.Horizontal, self)
+        self.s_blind_start.setRange(0, self.s_target.value())
+        self.s_blind_start.setValue(5)
+        self.s_blind_start.setSingleStep(1)
+        controls.addWidget(self.lbl_blind_start)
+        controls.addWidget(self.s_blind_start)
+        # Disable sliders until enabled
+        self.s_blind_dur.setEnabled(False)
+        self.s_blind_start.setEnabled(False)
+
         # Session info & save section
         controls.addSpacing(8)
         controls.addWidget(QLabel("Session info", self))
@@ -245,6 +278,10 @@ class TiltBallWindow(QMainWindow):
         self.s_win.valueChanged.connect(self._on_filter_size_changed)
         self.s_target.valueChanged.connect(self._on_target_changed)
         self.btn_save.clicked.connect(self._on_save)
+        # Blind signals
+        self.chk_blind.toggled.connect(self._on_blind_toggled)
+        self.s_blind_dur.valueChanged.connect(self._on_blind_dur_changed)
+        self.s_blind_start.valueChanged.connect(self._on_blind_start_changed)
 
         # Update timer
         self.timer = QTimer(self)
@@ -269,10 +306,13 @@ class TiltBallWindow(QMainWindow):
         (self.target_dot,) = self.ax.plot([self.x_path[0]], [self.y_path[0]], 'o', color='green', markersize=10, alpha=0.9)
 
         # Balls
-        (self.ball,) = self.ax.plot([0], [0], 'o', color='red', markersize=12, label='Subject')
+        (self.ball,) = self.ax.plot([0], [0], 'o', color='red', markersize=12, label='Manual Calc')
         # Measurement path line (initially empty/hidden)
         (self.meas_line,) = self.ax.plot([], [], '-', color='orange', lw=1.5, alpha=0.85, label='Measurement Path')
         self.meas_line.set_visible(False)
+        # Blind segment path overlay
+        (self.meas_blind_line,) = self.ax.plot([], [], '-', color='royalblue', lw=2.0, alpha=0.9, label='Blind segment')
+        self.meas_blind_line.set_visible(False)
         self.ax.legend(loc='upper right', fontsize=9)
 
         self.canvas.draw_idle()
@@ -284,6 +324,8 @@ class TiltBallWindow(QMainWindow):
         self.ax_err.set_ylim(0.0, 3.0 * self.xy_range)
         self.ax_err.grid(True, linestyle=':', alpha=0.3)
         (self.err_line,) = self.ax_err.plot([], [], color='tab:red', lw=1.0)
+        # Placeholder for blind shading
+        self.err_blind_span = None
         self.canvas.draw_idle()
 
     # ------------- Helpers -------------
@@ -308,7 +350,27 @@ class TiltBallWindow(QMainWindow):
         self.canvas.draw_idle()
 
     def _settings_text(self, filter_on: bool, n: int, tgt: int) -> str:
-        return f"Range: ±{self.xy_range:.0f}°, Filter: {'ON' if filter_on else 'OFF'}, N={n}, Target: {tgt}s"
+        # Be robust during __init__: blind controls may not be created yet
+        blind_txt = "OFF"
+        try:
+            chk = getattr(self, "chk_blind", None)
+            if chk is not None and chk.isChecked():
+                # Prefer slider values if available, otherwise fall back to defaults from state
+                s_dur = getattr(self, "s_blind_dur", None)
+                s_start = getattr(self, "s_blind_start", None)
+                try:
+                    bdur = int(s_dur.value()) if s_dur is not None else int(self.blind_duration_sec)
+                except Exception:
+                    bdur = int(self.blind_duration_sec)
+                try:
+                    bstart = int(s_start.value()) if s_start is not None else int(self.blind_start_sec)
+                except Exception:
+                    bstart = int(self.blind_start_sec)
+                blind_txt = f"{bdur}s @ {bstart}s"
+        except Exception:
+            # If anything goes wrong during early init, keep Blind: OFF
+            pass
+        return f"Range: ±{self.xy_range:.0f}°, Filter: {'ON' if filter_on else 'OFF'}, N={n}, Target: {tgt}s, Blind: {blind_txt}"
 
     def _update_settings_label(self):
         self.lbl_settings.setText(self._settings_text(self.chk_filter.isChecked(), int(self.s_win.value()), int(self.s_target.value())))
@@ -332,13 +394,33 @@ class TiltBallWindow(QMainWindow):
             # Reset traces and logs
             self.err_times.clear(); self.err_values.clear()
             self.err_line.set_data([], [])
+            # Remove any old blind shading
+            if self.err_blind_span is not None:
+                try:
+                    self.err_blind_span.remove()
+                except Exception:
+                    pass
+                self.err_blind_span = None
             self.meas_x.clear(); self.meas_y.clear()
             self.meas_line.set_data([], [])
             self.meas_line.set_visible(False)
+            self.meas_blind_line.set_data([], [])
+            self.meas_blind_line.set_visible(False)
             self.samples_t.clear(); self.samples_roll.clear(); self.samples_pitch.clear()
             self.samples_x.clear(); self.samples_y.clear(); self.samples_tx.clear(); self.samples_ty.clear()
-            self.samples_err.clear(); self.samples_quat.clear()
+            self.samples_err.clear(); self.samples_quat.clear(); self.samples_blind.clear()
             self.ax_err.set_xlim(0.0, self.err_window_sec)
+            # Snapshot blind window for this run
+            if self.chk_blind.isChecked():
+                bstart = float(self.s_blind_start.value())
+                bdur = float(self.s_blind_dur.value())
+                bstart = max(0.0, min(bstart, period))
+                bend = max(bstart, min(bstart + bdur, period))
+                self.active_blind_start = bstart
+                self.active_blind_end = bend
+            else:
+                self.active_blind_start = None
+                self.active_blind_end = None
             self.btn_toggle.setText("Stop")
             self.btn_save.setEnabled(False)
         else:
@@ -362,12 +444,45 @@ class TiltBallWindow(QMainWindow):
 
     def _on_target_changed(self, val: int):
         self.lbl_target.setText(f"Target T = {int(val)} s")
+        # Update blind start slider max to new duration
+        self.s_blind_start.setRange(0, int(val))
+        # Clamp current start and duration to fit in new window
+        bstart = min(self.s_blind_start.value(), int(val))
+        self.s_blind_start.setValue(bstart)
+        bdur = min(self.s_blind_dur.value(), int(val))
+        self.s_blind_dur.setValue(bdur)
+        self._on_blind_start_changed(self.s_blind_start.value())
+        self._on_blind_dur_changed(self.s_blind_dur.value())
         self._update_settings_label()
         # When not running, let the error-axis reflect the selected duration
         if not self.is_running:
             self.err_window_sec = float(val)
             self.ax_err.set_xlim(0.0, self.err_window_sec)
             self.canvas.draw_idle()
+
+    def _on_blind_toggled(self, checked: bool):
+        self.blind_enabled = bool(checked)
+        self.s_blind_dur.setEnabled(checked)
+        self.s_blind_start.setEnabled(checked)
+        self._update_settings_label()
+
+    def _on_blind_dur_changed(self, val: int):
+        self.blind_duration_sec = float(val)
+        self.lbl_blind_dur.setText(f"Blind duration = {int(val)} s")
+        # Ensure start + duration <= target
+        max_t = int(self.s_target.value())
+        if self.s_blind_start.value() + val > max_t:
+            self.s_blind_start.setValue(max(0, max_t - val))
+        self._update_settings_label()
+
+    def _on_blind_start_changed(self, val: int):
+        self.blind_start_sec = float(val)
+        self.lbl_blind_start.setText(f"Blind start @ {int(val)} s")
+        # Ensure start + duration <= target
+        max_t = int(self.s_target.value())
+        if val + self.s_blind_dur.value() > max_t:
+            self.s_blind_dur.setValue(max(1, max_t - val))
+        self._update_settings_label()
 
     # ------------- Update loop -------------
     def _on_tick(self):
@@ -410,6 +525,16 @@ class TiltBallWindow(QMainWindow):
             x = float(np.clip(roll_f, -self.xy_range, self.xy_range))
             y = float(np.clip(pitch_f, -self.xy_range, self.xy_range))
 
+            # Determine blind visibility for the red ball
+            blind_active_now = False
+            if self.is_running and self.measure_start_t is not None and self.active_blind_start is not None and self.active_blind_end is not None:
+                now_t = time.monotonic()
+                elapsed_run_tmp = now_t - self.measure_start_t
+                if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
+                    blind_active_now = True
+            # Hide or show the red ball
+            self.ball.set_visible(not blind_active_now)
+
             self.ball.set_data([x], [y])
 
             self.lbl_deg.setText(f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°")
@@ -435,6 +560,7 @@ class TiltBallWindow(QMainWindow):
                 self.samples_ty.append(float(y_t))
                 self.samples_err.append(err)
                 self.samples_quat.append([float(v) for v in q_rel])
+                self.samples_blind.append(1 if blind_active_now else 0)
 
                 # Auto-stop when elapsed reaches the selected duration
                 if elapsed_run >= self.err_window_sec:
@@ -450,8 +576,26 @@ class TiltBallWindow(QMainWindow):
         if len(self.meas_x) > 1:
             self.meas_line.set_data(self.meas_x, self.meas_y)
             self.meas_line.set_visible(True)
+            # Blind overlay (subset of measured path during blind)
+            if any(self.samples_blind):
+                xb = [self.meas_x[i] for i in range(len(self.meas_x)) if self.samples_blind[i]]
+                yb = [self.meas_y[i] for i in range(len(self.meas_y)) if self.samples_blind[i]]
+                if len(xb) > 1:
+                    self.meas_blind_line.set_data(xb, yb)
+                    self.meas_blind_line.set_visible(True)
             # Refresh legend in case it wasn't visible before
             self.ax.legend(loc='upper right', fontsize=9)
+        # Add shaded region on error plot for blind window
+        if self.active_blind_start is not None and self.active_blind_end is not None:
+            try:
+                if self.err_blind_span is not None:
+                    self.err_blind_span.remove()
+            except Exception:
+                pass
+            try:
+                self.err_blind_span = self.ax_err.axvspan(self.active_blind_start, self.active_blind_end, color='royalblue', alpha=0.15, label='Blind')
+            except Exception:
+                self.err_blind_span = None
         self.canvas.draw_idle()
 
     def _on_save(self):
@@ -478,6 +622,7 @@ class TiltBallWindow(QMainWindow):
             y = np.asarray(self.samples_y, dtype=np.float64)
             tx = np.asarray(self.samples_tx, dtype=np.float64)
             ty = np.asarray(self.samples_ty, dtype=np.float64)
+            blind = np.asarray(self.samples_blind, dtype=np.int32) if len(self.samples_blind) == len(t) else np.zeros_like(t, dtype=np.int32)
             duration = float(t[-1]) if len(t) > 0 else 0.0
             auc_err = float(np.trapz(err, t)) if len(t) > 1 else 0.0  # deg*s
             mean_err = float(np.mean(err)) if err.size else 0.0
@@ -503,6 +648,35 @@ class TiltBallWindow(QMainWindow):
             avg_speed_meas = float(path_len_meas / duration) if duration > 0 else 0.0
             avg_speed_target = float(path_len_target / duration) if duration > 0 else 0.0
 
+            # Blind-only stats
+            has_blind = int(np.any(blind == 1))
+            if has_blind:
+                mask = blind == 1
+                tb = t[mask]
+                errb = err[mask]
+                xb = x[mask]; yb = y[mask]
+                txb = tx[mask]; tyb = ty[mask]
+                exb = xb - txb; eyb = yb - tyb
+                duration_b = float(tb[-1] - tb[0]) if len(tb) > 0 else 0.0
+                auc_err_b = float(np.trapz(errb, tb)) if len(tb) > 1 else 0.0
+                mean_err_b = float(np.mean(errb)) if errb.size else 0.0
+                median_err_b = float(np.median(errb)) if errb.size else 0.0
+                std_err_b = float(np.std(errb, ddof=0)) if errb.size else 0.0
+                rmse_err_b = float(np.sqrt(np.mean(errb ** 2))) if errb.size else 0.0
+                max_err_b = float(np.max(errb)) if errb.size else 0.0
+                p95_err_b = float(np.percentile(errb, 95)) if errb.size else 0.0
+                mae_x_b = float(np.mean(np.abs(exb))) if exb.size else 0.0
+                rmse_x_b = float(np.sqrt(np.mean(exb ** 2))) if exb.size else 0.0
+                mae_y_b = float(np.mean(np.abs(eyb))) if eyb.size else 0.0
+                rmse_y_b = float(np.sqrt(np.mean(eyb ** 2))) if eyb.size else 0.0
+                path_len_meas_b = _path_len(xb, yb)
+                path_len_target_b = _path_len(txb, tyb)
+                avg_speed_meas_b = float(path_len_meas_b / duration_b) if duration_b > 0 else 0.0
+                avg_speed_target_b = float(path_len_target_b / duration_b) if duration_b > 0 else 0.0
+            else:
+                duration_b = auc_err_b = mean_err_b = median_err_b = std_err_b = rmse_err_b = max_err_b = p95_err_b = 0.0
+                mae_x_b = rmse_x_b = mae_y_b = rmse_y_b = path_len_meas_b = path_len_target_b = avg_speed_meas_b = avg_speed_target_b = 0.0
+
             stats_dict = {
                 "duration_s": duration,
                 "samples": int(len(t)),
@@ -521,6 +695,25 @@ class TiltBallWindow(QMainWindow):
                 "path_length_target_deg": path_len_target,
                 "avg_speed_meas_deg_s": avg_speed_meas,
                 "avg_speed_target_deg_s": avg_speed_target,
+                # Blind extras
+                "has_blind": int(has_blind),
+                "blind_duration_s": float(self.active_blind_end - self.active_blind_start) if (self.active_blind_start is not None and self.active_blind_end is not None) else 0.0,
+                "blind_start_s": float(self.active_blind_start) if self.active_blind_start is not None else 0.0,
+                "blind_mean_error_deg": mean_err_b,
+                "blind_median_error_deg": median_err_b,
+                "blind_std_error_deg": std_err_b,
+                "blind_rmse_error_deg": rmse_err_b,
+                "blind_max_error_deg": max_err_b,
+                "blind_p95_error_deg": p95_err_b,
+                "blind_auc_error_deg_s": auc_err_b,
+                "blind_mae_x_deg": mae_x_b,
+                "blind_rmse_x_deg": rmse_x_b,
+                "blind_mae_y_deg": mae_y_b,
+                "blind_rmse_y_deg": rmse_y_b,
+                "blind_path_length_meas_deg": path_len_meas_b,
+                "blind_path_length_target_deg": path_len_target_b,
+                "blind_avg_speed_meas_deg_s": avg_speed_meas_b,
+                "blind_avg_speed_target_deg_s": avg_speed_target_b,
             }
         except Exception as e:
             print(f"Failed to compute stats: {e}")
@@ -550,9 +743,12 @@ class TiltBallWindow(QMainWindow):
             "device_address": address,
             "device_tag": tag,
             "sensor_settings": cfg,
+            "blind_enabled": bool(self.chk_blind.isChecked()),
+            "blind_start_s": float(self.active_blind_start) if self.active_blind_start is not None else float(self.blind_start_sec if self.chk_blind.isChecked() else 0.0),
+            "blind_duration_s": float((self.active_blind_end - self.active_blind_start) if (self.active_blind_start is not None and self.active_blind_end is not None) else (self.blind_duration_sec if self.chk_blind.isChecked() else 0.0)),
             "stats": stats_dict,
             "columns": [
-                "t_s","roll_deg","pitch_deg","x_deg","y_deg","target_x_deg","target_y_deg","error_deg","q_w","q_x","q_y","q_z"
+                "t_s","roll_deg","pitch_deg","x_deg","y_deg","target_x_deg","target_y_deg","error_deg","blind","q_w","q_x","q_y","q_z"
             ],
         }
 
@@ -570,7 +766,7 @@ class TiltBallWindow(QMainWindow):
                     row = [
                         self.samples_t[i], self.samples_roll[i], self.samples_pitch[i],
                         self.samples_x[i], self.samples_y[i], self.samples_tx[i], self.samples_ty[i],
-                        self.samples_err[i],
+                        self.samples_err[i], float(self.samples_blind[i] if i < len(self.samples_blind) else 0),
                     ] + self.samples_quat[i]
                     f.write(",".join(f"{v:.6f}" for v in row) + "\n")
         except Exception as e:
@@ -584,7 +780,7 @@ class TiltBallWindow(QMainWindow):
         except Exception as e:
             print(f"Failed to write meta.json: {e}")
 
-        # Stats CSV
+        # Stats CSV (overall)
         try:
             stats_csv = os.path.join(out_dir, "stats.csv")
             with open(stats_csv, "w", encoding="utf-8") as sf:
@@ -593,6 +789,35 @@ class TiltBallWindow(QMainWindow):
                     sf.write(f"{k},{v}\n")
         except Exception as e:
             print(f"Failed to write stats.csv: {e}")
+
+        # Blind-only samples
+        try:
+            if any(self.samples_blind):
+                blind_samples_path = os.path.join(out_dir, "blind_samples.csv")
+                with open(blind_samples_path, "w", encoding="utf-8") as bf:
+                    bf.write(",".join(meta["columns"]) + "\n")
+                    for i in range(len(self.samples_t)):
+                        if i < len(self.samples_blind) and self.samples_blind[i]:
+                            row = [
+                                self.samples_t[i], self.samples_roll[i], self.samples_pitch[i],
+                                self.samples_x[i], self.samples_y[i], self.samples_tx[i], self.samples_ty[i],
+                                self.samples_err[i], float(self.samples_blind[i]),
+                            ] + self.samples_quat[i]
+                            bf.write(",".join(f"{v:.6f}" for v in row) + "\n")
+        except Exception as e:
+            print(f"Failed to write blind_samples.csv: {e}")
+
+        # Blind-only stats CSV
+        try:
+            if stats_dict.get("has_blind", 0):
+                blind_stats_csv = os.path.join(out_dir, "blind_stats.csv")
+                with open(blind_stats_csv, "w", encoding="utf-8") as bsf:
+                    bsf.write("metric,value\n")
+                    for k, v in stats_dict.items():
+                        if k.startswith("blind_") or k in ("has_blind",):
+                            bsf.write(f"{k},{v}\n")
+        except Exception as e:
+            print(f"Failed to write blind_stats.csv: {e}")
 
         # Save plots: full figure (both plots) and separate error plot
         try:
@@ -613,6 +838,9 @@ class TiltBallWindow(QMainWindow):
             if len(self.err_times) > 0:
                 ax_e.plot(list(self.err_times), list(self.err_values), color='tab:red', lw=1.0)
                 ax_e.set_xlim(0.0, float(self.err_window_sec))
+                # Shade blind window if present
+                if self.active_blind_start is not None and self.active_blind_end is not None:
+                    ax_e.axvspan(self.active_blind_start, self.active_blind_end, color='royalblue', alpha=0.15)
             fig_err.savefig(os.path.join(out_dir, "error_plot.png"), dpi=150, bbox_inches='tight', facecolor='white')
         except Exception as e:
             print(f"Failed to save error_plot.png: {e}")
