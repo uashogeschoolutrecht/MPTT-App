@@ -7,7 +7,7 @@ Original project: [https://github.com/jiminghe/Xsens_DOT_PC_Reader](https://gith
 What we changed or added for our use case:
 - Interactive tilt-ball demo for quaternion payloads in `examples/multi_dot_demo.py`:
   - Live 2D ball showing tilt derived from orientation quaternions
-  - One-click calibration, keyboard shortcuts
+  - One-click calibration
   - Start/Stop toggle, adjustable range, optional moving-average filter with window size
   - Moving target path and live absolute error plot for quick training/feedback
 - Safer connect/measure/cleanup flow with robust try/finally and graceful shutdown
@@ -39,7 +39,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3) Run the spiral tracking app
+3) Run the MPTT-App
 ```cmd
 python app/spiral_tracking.py
 ```
@@ -57,20 +57,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3) Run the spiral tracking app.
+3) Run the MPTT-App
 ```bash
 python app/spiral_tracking.py
 ```
 Controls:
-- Calibrate: button or press c / space
-- Exit: button or press q / esc
+- Calibrate: button
+- Exit: button
 - Range +/-: adjust plot limits
 - Filter: toggle plus window size slider
 - Start/Stop: toggle motion of the green target path
 
 Tested with Python 3.10+ on macOS. BLE uses CoreBluetooth via Bleak.
 
-# Spiral Tracking App
+# MPTT-App
 
 This app connects to a Movella/Xsens DOT sensor via BLE and displays a tilt ball UI.
 
@@ -94,17 +94,15 @@ pip install -r requirements.txt
 python -m movella_dot_py.app.spiral_tracking
 ```
 
-Keyboard shortcuts inside the window:
-- Calibrate button or press the button
-- Start/Stop toggles the animation
-- Exit closes the window
-
 ## Notes
 - Ensure Bluetooth is enabled.
 - Some BLE functionality may require granting permissions on macOS.
 
 ## Roadmap / TODO
-- rename everything to Motorische Precisie en ProprioceptieTest (MPTT) just call it MPTT-App
+
+
+- Change formula for path to a single path, scaled by axis. Is it possobl;e? R=2cos40. 
+
 - Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
 - Session logging to CSV:
   - Record raw sensor data (calibrated degrees dissplacement from ofset.)

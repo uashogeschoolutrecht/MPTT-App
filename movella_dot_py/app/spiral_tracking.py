@@ -89,7 +89,7 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 class TiltBallWindow(QMainWindow):
     def __init__(self, sensors: List[MovellaDOTSensor], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Spiral Tracking - PySide6")
+        self.setWindowTitle("MPTT-App")
         self.sensors = sensors
         self.sensor: Optional[MovellaDOTSensor] = sensors[0] if sensors else None
 
@@ -756,7 +756,7 @@ class TiltBallWindow(QMainWindow):
         samples_path = os.path.join(out_dir, "samples.csv")
         try:
             with open(samples_path, "w", encoding="utf-8") as f:
-                f.write("# Spiral Tracking raw samples\n")
+                f.write("# MPTT-App raw samples\n")
                 for k, v in meta.items():
                     if k == "columns":
                         continue
