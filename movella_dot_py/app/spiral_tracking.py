@@ -330,8 +330,12 @@ class TiltBallWindow(QMainWindow):
 
     # ------------- Helpers -------------
     def _compute_path_arrays(self, range_val: float):
+        # 8-lobed rose curve with offset: r(θ) = R0 + A*cos(8θ)
+        # Choose R0 and A so that r_min > 0 (avoid center) and r_max < range (stay on screen)
         theta = np.linspace(0.0, 2.0 * np.pi, self.num_path_pts)
-        r = range_val * np.cos(2.0 * theta)
+        R0 = 0.55 * float(range_val)
+        A = 0.30 * float(range_val)
+        r = R0 + A * np.cos(8.0 * theta)
         x = r * np.cos(theta)
         y = r * np.sin(theta)
         return theta, x, y
@@ -492,7 +496,11 @@ class TiltBallWindow(QMainWindow):
             now = time.monotonic()
             elapsed = (now - self.t0) % period
             self.theta_current = (elapsed / period) * (2.0 * np.pi)
-        r_t = self.xy_range * np.cos(2.0 * self.theta_current)
+        # 8-lobed rose curve with offset: r(θ) = R0 + A*cos(8θ)
+        # Choose R0 and A so that r_min > 0 (avoid center) and r_max < range (stay on screen)
+        R0 = 0.55 * float(self.xy_range)
+        A = 0.30 * float(self.xy_range)
+        r_t = R0 + A * np.cos(8.0 * self.theta_current)
         x_t = r_t * np.cos(self.theta_current)
         y_t = r_t * np.sin(self.theta_current)
         self.target_dot.set_data([x_t], [y_t])
@@ -889,7 +897,6 @@ async def init_sensors() -> List[MovellaDOTSensor]:
     sensors: List[MovellaDOTSensor] = []
 
         
-
 
     config = SensorConfiguration(
         output_rate=OutputRate.RATE_30,

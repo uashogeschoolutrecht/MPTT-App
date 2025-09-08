@@ -101,7 +101,7 @@ python -m movella_dot_py.app.spiral_tracking
 ## Roadmap / TODO
 
 
-- Change formula for path to a single path, scaled by axis. Is it possobl;e? R=2cos40. 
+- Target path now uses an 8-lobed rose curve r(θ) = R0 + A·cos(8θ), scaled to the axis range with R_min > 0 so it never enters the center.
 
 - Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
 - Session logging to CSV:
