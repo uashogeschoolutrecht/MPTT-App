@@ -136,9 +136,13 @@ class TiltBallWindow(QMainWindow):
         self.blind_enabled = False
         self.blind_duration_sec = 5.0
         self.blind_start_sec = 5.0
+        # Repeating blind configuration
+        self.blind_repeat_enabled = False
+        self.blind_repeat_every_sec = 10.0
         # Snapshot used during an active run
         self.active_blind_start: Optional[float] = None
         self.active_blind_end: Optional[float] = None
+        self.active_blind_windows: List[tuple] = []  # list of (start,end)
 
         # Build UI
         central = QWidget(self)
@@ -230,9 +234,22 @@ class TiltBallWindow(QMainWindow):
         self.s_blind_start.setSingleStep(1)
         controls.addWidget(self.lbl_blind_start)
         controls.addWidget(self.s_blind_start)
+        # Repeat checkbox + interval slider
+        self.chk_blind_repeat = QCheckBox("Repeat blind every", self)
+        self.chk_blind_repeat.setChecked(False)
+        controls.addWidget(self.chk_blind_repeat)
+        self.lbl_blind_every = QLabel("Repeat every = 10 s", self)
+        self.s_blind_every = QSlider(Qt.Horizontal, self)
+        self.s_blind_every.setRange(2, 120)
+        self.s_blind_every.setValue(10)
+        self.s_blind_every.setSingleStep(1)
+        controls.addWidget(self.lbl_blind_every)
+        controls.addWidget(self.s_blind_every)
         # Disable sliders until enabled
         self.s_blind_dur.setEnabled(False)
         self.s_blind_start.setEnabled(False)
+        self.chk_blind_repeat.setEnabled(False)
+        self.s_blind_every.setEnabled(False)
 
         # Session info & save section
         controls.addSpacing(8)
@@ -282,6 +299,9 @@ class TiltBallWindow(QMainWindow):
         self.chk_blind.toggled.connect(self._on_blind_toggled)
         self.s_blind_dur.valueChanged.connect(self._on_blind_dur_changed)
         self.s_blind_start.valueChanged.connect(self._on_blind_start_changed)
+        # Repeat signals
+        self.chk_blind_repeat.toggled.connect(self._on_blind_repeat_toggled)
+        self.s_blind_every.valueChanged.connect(self._on_blind_every_changed)
 
         # Update timer
         self.timer = QTimer(self)
@@ -362,6 +382,8 @@ class TiltBallWindow(QMainWindow):
                 # Prefer slider values if available, otherwise fall back to defaults from state
                 s_dur = getattr(self, "s_blind_dur", None)
                 s_start = getattr(self, "s_blind_start", None)
+                s_every = getattr(self, "s_blind_every", None)
+                chk_rep = getattr(self, "chk_blind_repeat", None)
                 try:
                     bdur = int(s_dur.value()) if s_dur is not None else int(self.blind_duration_sec)
                 except Exception:
@@ -370,7 +392,14 @@ class TiltBallWindow(QMainWindow):
                     bstart = int(s_start.value()) if s_start is not None else int(self.blind_start_sec)
                 except Exception:
                     bstart = int(self.blind_start_sec)
-                blind_txt = f"{bdur}s @ {bstart}s"
+                if chk_rep is not None and chk_rep.isChecked():
+                    try:
+                        bevery = int(s_every.value()) if s_every is not None else int(self.blind_repeat_every_sec)
+                    except Exception:
+                        bevery = int(self.blind_repeat_every_sec)
+                    blind_txt = f"{bdur}s every {bevery}s starting {bstart}s"
+                else:
+                    blind_txt = f"{bdur}s @ {bstart}s"
         except Exception:
             # If anything goes wrong during early init, keep Blind: OFF
             pass
@@ -405,6 +434,14 @@ class TiltBallWindow(QMainWindow):
                 except Exception:
                     pass
                 self.err_blind_span = None
+            # Remove any prior multiple spans
+            if hasattr(self, 'err_blind_spans'):
+                try:
+                    for sp in self.err_blind_spans:
+                        sp.remove()
+                except Exception:
+                    pass
+                self.err_blind_spans = []
             self.meas_x.clear(); self.meas_y.clear()
             self.meas_line.set_data([], [])
             self.meas_line.set_visible(False)
@@ -414,17 +451,32 @@ class TiltBallWindow(QMainWindow):
             self.samples_x.clear(); self.samples_y.clear(); self.samples_tx.clear(); self.samples_ty.clear()
             self.samples_err.clear(); self.samples_quat.clear(); self.samples_blind.clear()
             self.ax_err.set_xlim(0.0, self.err_window_sec)
-            # Snapshot blind window for this run
+            # Snapshot blind windows for this run
+            self.active_blind_start = None
+            self.active_blind_end = None
+            self.active_blind_windows = []
             if self.chk_blind.isChecked():
                 bstart = float(self.s_blind_start.value())
                 bdur = float(self.s_blind_dur.value())
-                bstart = max(0.0, min(bstart, period))
-                bend = max(bstart, min(bstart + bdur, period))
-                self.active_blind_start = bstart
-                self.active_blind_end = bend
-            else:
-                self.active_blind_start = None
-                self.active_blind_end = None
+                if self.chk_blind_repeat.isChecked():
+                    bevery = max(1.0, float(self.s_blind_every.value()))
+                    t0 = max(0.0, bstart)
+                    while t0 < period:
+                        s = t0
+                        e = min(t0 + bdur, period)
+                        if e > s:
+                            self.active_blind_windows.append((s, e))
+                        t0 += bevery
+                    # For compatibility fields
+                    if self.active_blind_windows:
+                        self.active_blind_start = self.active_blind_windows[0][0]
+                        self.active_blind_end = self.active_blind_windows[0][1]
+                else:
+                    bstart = max(0.0, min(bstart, period))
+                    bend = max(bstart, min(bstart + bdur, period))
+                    self.active_blind_start = bstart
+                    self.active_blind_end = bend
+                    self.active_blind_windows = [(bstart, bend)]
             self.btn_toggle.setText("Stop")
             self.btn_save.setEnabled(False)
         else:
@@ -468,24 +520,37 @@ class TiltBallWindow(QMainWindow):
         self.blind_enabled = bool(checked)
         self.s_blind_dur.setEnabled(checked)
         self.s_blind_start.setEnabled(checked)
+        self.chk_blind_repeat.setEnabled(checked)
+        rep_enabled = checked and self.chk_blind_repeat.isChecked()
+        self.s_blind_every.setEnabled(rep_enabled)
         self._update_settings_label()
 
     def _on_blind_dur_changed(self, val: int):
         self.blind_duration_sec = float(val)
         self.lbl_blind_dur.setText(f"Blind duration = {int(val)} s")
-        # Ensure start + duration <= target
+        # Ensure start + duration <= target unless repeating (we'll clip per-window later)
         max_t = int(self.s_target.value())
-        if self.s_blind_start.value() + val > max_t:
+        if (not self.chk_blind_repeat.isChecked()) and (self.s_blind_start.value() + val > max_t):
             self.s_blind_start.setValue(max(0, max_t - val))
         self._update_settings_label()
 
     def _on_blind_start_changed(self, val: int):
         self.blind_start_sec = float(val)
         self.lbl_blind_start.setText(f"Blind start @ {int(val)} s")
-        # Ensure start + duration <= target
+        # For single-window mode keep it in range
         max_t = int(self.s_target.value())
-        if val + self.s_blind_dur.value() > max_t:
+        if (not self.chk_blind_repeat.isChecked()) and (val + self.s_blind_dur.value() > max_t):
             self.s_blind_dur.setValue(max(1, max_t - val))
+        self._update_settings_label()
+
+    def _on_blind_repeat_toggled(self, checked: bool):
+        self.blind_repeat_enabled = bool(checked)
+        self.s_blind_every.setEnabled(self.blind_enabled and checked)
+        self._update_settings_label()
+
+    def _on_blind_every_changed(self, val: int):
+        self.blind_repeat_every_sec = float(val)
+        self.lbl_blind_every.setText(f"Repeat every = {int(val)} s")
         self._update_settings_label()
 
     # ------------- Update loop -------------
@@ -535,11 +600,18 @@ class TiltBallWindow(QMainWindow):
 
             # Determine blind visibility for the red ball
             blind_active_now = False
-            if self.is_running and self.measure_start_t is not None and self.active_blind_start is not None and self.active_blind_end is not None:
+            if self.is_running and self.measure_start_t is not None:
                 now_t = time.monotonic()
                 elapsed_run_tmp = now_t - self.measure_start_t
-                if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
-                    blind_active_now = True
+                if self.active_blind_windows:
+                    for s, e in self.active_blind_windows:
+                        if s <= elapsed_run_tmp < e:
+                            blind_active_now = True
+                            break
+                elif (self.active_blind_start is not None and self.active_blind_end is not None):
+                    if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
+                        blind_active_now = True
+
             # Hide or show the red ball
             self.ball.set_visible(not blind_active_now)
 
@@ -586,24 +658,39 @@ class TiltBallWindow(QMainWindow):
             self.meas_line.set_visible(True)
             # Blind overlay (subset of measured path during blind)
             if any(self.samples_blind):
-                xb = [self.meas_x[i] for i in range(len(self.meas_x)) if self.samples_blind[i]]
-                yb = [self.meas_y[i] for i in range(len(self.meas_y)) if self.samples_blind[i]]
+                xb = []
+                yb = []
+                for i in range(len(self.meas_x)):
+                    if self.samples_blind[i]:
+                        xb.append(self.meas_x[i])
+                        yb.append(self.meas_y[i])
+                        # Insert a break (NaN) at the end of each blind segment
+                        if i + 1 >= len(self.meas_x) or not self.samples_blind[i + 1]:
+                            xb.append(np.nan)
+                            yb.append(np.nan)
                 if len(xb) > 1:
                     self.meas_blind_line.set_data(xb, yb)
                     self.meas_blind_line.set_visible(True)
             # Refresh legend in case it wasn't visible before
             self.ax.legend(loc='upper right', fontsize=9)
-        # Add shaded region on error plot for blind window
-        if self.active_blind_start is not None and self.active_blind_end is not None:
+        # Add shaded region(s) on error plot for blind windows
+        # Remove previous spans
+        if hasattr(self, 'err_blind_spans'):
             try:
-                if self.err_blind_span is not None:
-                    self.err_blind_span.remove()
+                for sp in self.err_blind_spans:
+                    sp.remove()
             except Exception:
                 pass
+        self.err_blind_spans = []
+        spans = self.active_blind_windows if self.active_blind_windows else (
+            [(self.active_blind_start, self.active_blind_end)] if (self.active_blind_start is not None and self.active_blind_end is not None) else []
+        )
+        for s, e in spans:
             try:
-                self.err_blind_span = self.ax_err.axvspan(self.active_blind_start, self.active_blind_end, color='royalblue', alpha=0.15, label='Blind')
+                sp = self.ax_err.axvspan(s, e, color='royalblue', alpha=0.15, label='Blind')
+                self.err_blind_spans.append(sp)
             except Exception:
-                self.err_blind_span = None
+                pass
         self.canvas.draw_idle()
 
     def _on_save(self):
@@ -666,6 +753,14 @@ class TiltBallWindow(QMainWindow):
                 txb = tx[mask]; tyb = ty[mask]
                 exb = xb - txb; eyb = yb - tyb
                 duration_b = float(tb[-1] - tb[0]) if len(tb) > 0 else 0.0
+                # If multiple windows, compute total union length from active_blind_windows
+                try:
+                    spans = self.active_blind_windows if self.active_blind_windows else (
+                        [(self.active_blind_start, self.active_blind_end)] if (self.active_blind_start is not None and self.active_blind_end is not None) else []
+                    )
+                    duration_b = float(sum(max(0.0, e - s) for s, e in spans)) if spans else duration_b
+                except Exception:
+                    pass
                 auc_err_b = float(np.trapz(errb, tb)) if len(tb) > 1 else 0.0
                 mean_err_b = float(np.mean(errb)) if errb.size else 0.0
                 median_err_b = float(np.median(errb)) if errb.size else 0.0
@@ -686,6 +781,7 @@ class TiltBallWindow(QMainWindow):
                 mae_x_b = rmse_x_b = mae_y_b = rmse_y_b = path_len_meas_b = path_len_target_b = avg_speed_meas_b = avg_speed_target_b = 0.0
 
             stats_dict = {
+                "blind_windows_count": int(len(self.active_blind_windows)) if self.active_blind_windows else (1 if (self.active_blind_start is not None and self.active_blind_end is not None) else 0),
                 "duration_s": duration,
                 "samples": int(len(t)),
                 "mean_error_deg": mean_err,
@@ -705,7 +801,7 @@ class TiltBallWindow(QMainWindow):
                 "avg_speed_target_deg_s": avg_speed_target,
                 # Blind extras
                 "has_blind": int(has_blind),
-                "blind_duration_s": float(self.active_blind_end - self.active_blind_start) if (self.active_blind_start is not None and self.active_blind_end is not None) else 0.0,
+                "blind_duration_s": float(sum(max(0.0, e - s) for s, e in self.active_blind_windows)) if self.active_blind_windows else (float(self.active_blind_end - self.active_blind_start) if (self.active_blind_start is not None and self.active_blind_end is not None) else duration_b),
                 "blind_start_s": float(self.active_blind_start) if self.active_blind_start is not None else 0.0,
                 "blind_mean_error_deg": mean_err_b,
                 "blind_median_error_deg": median_err_b,
@@ -752,8 +848,11 @@ class TiltBallWindow(QMainWindow):
             "device_tag": tag,
             "sensor_settings": cfg,
             "blind_enabled": bool(self.chk_blind.isChecked()),
+            "blind_repeat_enabled": bool(self.chk_blind_repeat.isChecked()) if hasattr(self, 'chk_blind_repeat') else False,
             "blind_start_s": float(self.active_blind_start) if self.active_blind_start is not None else float(self.blind_start_sec if self.chk_blind.isChecked() else 0.0),
             "blind_duration_s": float((self.active_blind_end - self.active_blind_start) if (self.active_blind_start is not None and self.active_blind_end is not None) else (self.blind_duration_sec if self.chk_blind.isChecked() else 0.0)),
+            "blind_every_s": float(self.blind_repeat_every_sec) if getattr(self, 'blind_repeat_enabled', False) else 0.0,
+            "blind_windows": list(self.active_blind_windows) if self.active_blind_windows else ([] if self.active_blind_start is None else [(self.active_blind_start, self.active_blind_end)]),
             "stats": stats_dict,
             "columns": [
                 "t_s","roll_deg","pitch_deg","x_deg","y_deg","target_x_deg","target_y_deg","error_deg","blind","q_w","q_x","q_y","q_z"
@@ -847,8 +946,11 @@ class TiltBallWindow(QMainWindow):
                 ax_e.plot(list(self.err_times), list(self.err_values), color='tab:red', lw=1.0)
                 ax_e.set_xlim(0.0, float(self.err_window_sec))
                 # Shade blind window if present
-                if self.active_blind_start is not None and self.active_blind_end is not None:
-                    ax_e.axvspan(self.active_blind_start, self.active_blind_end, color='royalblue', alpha=0.15)
+                spans = self.active_blind_windows if self.active_blind_windows else (
+                    [(self.active_blind_start, self.active_blind_end)] if (self.active_blind_start is not None and self.active_blind_end is not None) else []
+                )
+                for s, e in spans:
+                    ax_e.axvspan(s, e, color='royalblue', alpha=0.15)
             fig_err.savefig(os.path.join(out_dir, "error_plot.png"), dpi=150, bbox_inches='tight', facecolor='white')
         except Exception as e:
             print(f"Failed to save error_plot.png: {e}")
