@@ -39,9 +39,9 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3) Run the MPTT-App
+3) Run the app
 ```cmd
-python -m mptt_app
+python -m mppt.app.mppt
 ```
 
 ### macOS/Linux (bash/zsh)
@@ -57,7 +57,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3) Run the MPTT-App
+3) Run the app
 ```bash
 python3 -m mppt.app.mppt
 ```
@@ -85,7 +85,7 @@ pip install -r requirements.txt
 ## Run
 
 ```sh
-python -m mptt_app
+python3 -m mppt.app.mppt
 ```
 
 ## Notes
@@ -178,6 +178,43 @@ The SDK provides various methods to access collected data:
 - Some payload modes (`HIGH_FIDELITY`, `HIGH_FIDELITY_WITH_MAG`, `CUSTOM_MODE_4`) are only available with the official Movella SDK
 - Maximum of 5 simultaneous sensor connections recommended
 - Windows 10 or higher required for BLE functionality
+
+## Build shareable apps (macOS and Windows)
+
+We provide PyInstaller specs to bundle the GUI into a single app per platform. Build on each OS natively (you cannot build a Windows .exe from macOS, and vice versa).
+
+Prereqs (in your venv):
+
+```bash
+pip install pyinstaller
+```
+
+### macOS (app bundle)
+
+1) From the project root, run:
+
+```bash
+pyinstaller pyinstaller-mac.spec
+```
+
+2) The .app bundle will be at `dist/Spiral-Tracking-App.app`. Zip it or create a DMG to share. First run on an unsigned app may require: right-click the app -> Open -> Open.
+
+BLE permissions: macOS will prompt for Bluetooth access (we include usage descriptions in the bundle).
+
+### Windows (exe folder)
+
+1) In a Windows venv, run:
+
+```powershell
+pyinstaller pyinstaller-win.spec
+```
+
+2) The output will be in `dist/Spiral-Tracking-App/`. Share the whole folder or repackage with an installer if desired.
+
+Notes:
+- Build must be done on the target OS. For Apple Silicon, the app will be arm64 by default. For Intel Macs, x86_64.
+- If antivirus flags the unsigned build, add an allow-list or sign the app/binary.
+- If matplotlib/PySide6 plugins are missing, update PyInstaller to latest and retry.
 
 
 ## Acknowledgments
