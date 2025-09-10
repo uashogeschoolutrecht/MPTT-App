@@ -7,7 +7,7 @@ Original project: [https://github.com/jiminghe/Xsens_DOT_PC_Reader](https://gith
 What we changed or added for our use case:
 - Interactive tilt-ball demo for quaternion payloads in `examples/multi_dot_demo.py`:
   - Live 2D ball showing tilt derived from orientation quaternions
-  - One-click calibration, keyboard shortcuts
+  - One-click calibration
   - Start/Stop toggle, adjustable range, optional moving-average filter with window size
   - Moving target path and live absolute error plot for quick training/feedback
 - Safer connect/measure/cleanup flow with robust try/finally and graceful shutdown
@@ -39,9 +39,9 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3) Run the spiral tracking app
+3) Run the MPTT-App
 ```cmd
-python app/spiral_tracking.py
+python -m mptt_app
 ```
 
 ### macOS/Linux (bash/zsh)
@@ -57,37 +57,42 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3) Run the spiral tracking app.
+3) Run the MPTT-App
 ```bash
-python app/spiral_tracking.py
+python3 -m mppt.app.mppt
 ```
-Controls:
-- Calibrate: button or press c / space
-- Exit: button or press q / esc
-- Range +/-: adjust plot limits
-- Filter: toggle plus window size slider
-- Start/Stop: toggle motion of the green target path
 
 Tested with Python 3.10+ on macOS. BLE uses CoreBluetooth via Bleak.
 
-## Roadmap / TODO
-- rename everything to Motorische Precisie en ProprioceptieTest (MPTT) just call it MPTT-App
-- Currently its one loop. its async but if the UI is slow on the HU laptop, which needs testing, we might need to improve this by introducing threading, one for graph, one for getting data and one for logging. @ Anton use ques in between. 
-- Session logging to CSV:
-  - Record raw sensor data (calibrated degrees dissplacement from ofset.)
-  - Target trajectory per-sample, absolute error per-sample, and end-of-trial summary error (mean and path(sum))
-  - Subject info (ID, handedness, notes) and measurement metadata (timestamps, output rate, filter profile, firmware, device IDs)
-  - Configurable output directory and file rotation
-- 5 second currecnt position dissapear:
-  - period adjustable. 
-  - set flag in log data, 
-  - add extra log file with only that data, and summary of the measurement. 
+# MPTT-App
 
-- Misc enhancements:
-  - Multi-sensor support, but you select which one to connect to. 
-  - CLI flags and/or YAML config for rates, profiles, filters, and paths
-  - Packaging/CI improvements
-  - etc.
+This app connects to a Movella/Xsens DOT sensor via BLE. 
+
+## GUI
+
+The GUI is implemented with PySide6 and embeds a Matplotlib canvas. Async BLE is integrated with the Qt event loop via qasync.
+
+## Setup
+
+On macOS with zsh:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Run
+
+```sh
+python -m mptt_app
+```
+
+## Notes
+- Ensure Bluetooth is enabled.
+- Some BLE functionality may require granting permissions on macOS.
+
+## Roadmap / TODO
 
 
 ## Configuration Options of originalsoftware. 

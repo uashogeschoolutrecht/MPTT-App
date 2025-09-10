@@ -2,11 +2,14 @@ from typing import Optional
 import struct
 import asyncio
 from bleak import BleakClient, BleakScanner
-from ..models.characteristics import MovellaDOTCharacteristics
-from ..models.data_structures import (SensorConfiguration, DeviceInfo, 
-                                    SensorData)
-from ..models.enums import PayloadMode, FilterProfile
-from .collector import SensorDataCollector
+from mppt.models.characteristics import MovellaDOTCharacteristics
+from mppt.models.data_structures import (
+    SensorConfiguration,
+    DeviceInfo,
+    SensorData,
+)
+from mppt.models.enums import PayloadMode, FilterProfile
+from mppt.core.collector import SensorDataCollector
 import time
 
 
@@ -155,13 +158,11 @@ class MovellaDOTSensor:
             if self.data_collector:
                 parsed_data = self.data_collector.parser.parse(data)
                 self.data_collector.add_data(data)
-                
-                print(f"\nReal-time Sensor Data from {self._device_tag} ({self._device_address}):")
-                
-                if parsed_data.quaternion:
-                    print(f"Quaternion (w,x,y,z): {parsed_data.quaternion.w:.3f}, "
-                          f"{parsed_data.quaternion.x:.3f}, {parsed_data.quaternion.y:.3f}, "
-                          f"{parsed_data.quaternion.z:.3f}")
+                                
+                # if parsed_data.quaternion:
+                #     print(f"Quaternion (w,x,y,z): {parsed_data.quaternion.w:.3f}, "
+                #           f"{parsed_data.quaternion.x:.3f}, {parsed_data.quaternion.y:.3f}, "
+                #           f"{parsed_data.quaternion.z:.3f}")
                     
                 if parsed_data.euler_angles:
                     print(f"Euler (roll,pitch,yaw): {parsed_data.euler_angles.roll:.1f}°, "
