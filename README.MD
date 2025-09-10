@@ -59,20 +59,14 @@ pip install -r requirements.txt
 
 3) Run the MPTT-App
 ```bash
-python -m mptt_app
+python3 -m mppt.app.mppt
 ```
-Controls:
-- Calibrate: button
-- Exit: button
-- Range +/-: adjust plot limits
-- Filter: toggle plus window size slider
-- Start/Stop: toggle motion of the green target path
 
 Tested with Python 3.10+ on macOS. BLE uses CoreBluetooth via Bleak.
 
 # MPTT-App
 
-This app connects to a Movella/Xsens DOT sensor via BLE and displays a tilt ball UI.
+This app connects to a Movella/Xsens DOT sensor via BLE. 
 
 ## GUI
 
