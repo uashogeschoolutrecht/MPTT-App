@@ -95,20 +95,6 @@ python -m mptt_app
 ## Roadmap / TODO
 
 
-- Target path now uses an 8-lobed rose curve r(θ) = R0 + A·cos(8θ), scaled to the axis range with R_min > 0 so it never enters the center.
-
-- 5 second currecnt position dissapear:
-  - period adjustable. 
-  - set flag in log data, 
-  - add extra log file with only that data, and summary of the measurement. 
-
-- Misc enhancements:
-  - Multi-sensor support, but you select which one to connect to. 
-  - CLI flags and/or YAML config for rates, profiles, filters, and paths
-  - Packaging/CI improvements
-  - etc.
-
-
 ## Configuration Options of originalsoftware. 
 
 ### Output Rates (OutputRate)
