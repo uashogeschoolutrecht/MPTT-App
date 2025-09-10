@@ -1,8 +1,8 @@
 from typing import List
 import numpy as np
-from models.enums import PayloadMode
-from models.data_structures import SensorData
-from .parser import PayloadParser
+from mppt.models.enums import PayloadMode
+from mppt.models.data_structures import SensorData
+from mppt.core.parser import PayloadParser
 
 class SensorDataCollector:
     """Collects and stores sensor data"""

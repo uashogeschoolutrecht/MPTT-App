@@ -41,7 +41,7 @@ pip install -r requirements.txt
 
 3) Run the MPTT-App
 ```cmd
-python app/spiral_tracking.py
+python -m mptt_app
 ```
 
 ### macOS/Linux (bash/zsh)
@@ -59,7 +59,7 @@ pip install -r requirements.txt
 
 3) Run the MPTT-App
 ```bash
-python app/spiral_tracking.py
+python -m mptt_app
 ```
 Controls:
 - Calibrate: button
@@ -91,7 +91,7 @@ pip install -r requirements.txt
 ## Run
 
 ```sh
-python -m movella_dot_py.app.spiral_tracking
+python -m mptt_app
 ```
 
 ## Notes

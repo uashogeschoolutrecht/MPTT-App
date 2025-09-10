@@ -2,11 +2,14 @@ from typing import Optional
 import struct
 import asyncio
 from bleak import BleakClient, BleakScanner
-from models.characteristics import MovellaDOTCharacteristics
-from models.data_structures import (SensorConfiguration, DeviceInfo, 
-                                    SensorData)
-from models.enums import PayloadMode, FilterProfile
-from .collector import SensorDataCollector
+from mppt.models.characteristics import MovellaDOTCharacteristics
+from mppt.models.data_structures import (
+    SensorConfiguration,
+    DeviceInfo,
+    SensorData,
+)
+from mppt.models.enums import PayloadMode, FilterProfile
+from mppt.core.collector import SensorDataCollector
 import time
 
 

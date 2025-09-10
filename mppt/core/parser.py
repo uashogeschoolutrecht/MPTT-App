@@ -1,6 +1,13 @@
-from models.enums import PayloadMode
-from models.data_structures import (SensorData, Timestamp, Quaternion, 
-                                    EulerAngles, Vector3, MagneticField, Status)
+from mppt.models.enums import PayloadMode
+from mppt.models.data_structures import (
+    SensorData,
+    Timestamp,
+    Quaternion,
+    EulerAngles,
+    Vector3,
+    MagneticField,
+    Status,
+)
 
 class PayloadParser:
     """Parser for different payload types"""

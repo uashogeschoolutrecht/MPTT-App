@@ -28,12 +28,10 @@ from matplotlib.figure import Figure
 
 from qasync import QEventLoop
 
-# Add the parent directory to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.sensor import MovellaDOTSensor
-from models.data_structures import SensorConfiguration
-from models.enums import OutputRate, FilterProfile, PayloadMode
+# Import within package namespace
+from mppt.core.sensor import MovellaDOTSensor
+from mppt.models.data_structures import SensorConfiguration
+from mppt.models.enums import OutputRate, FilterProfile, PayloadMode
 from bleak import BleakScanner, BleakClient
 
 
@@ -89,7 +87,7 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 class TiltBallWindow(QMainWindow):
     def __init__(self, sensors: List[MovellaDOTSensor], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("MPTT-App")
+        self.setWindowTitle("MTT-App")
         self.sensors = sensors
         self.sensor: Optional[MovellaDOTSensor] = sensors[0] if sensors else None
 
