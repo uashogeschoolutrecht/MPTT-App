@@ -54,7 +54,7 @@ source .venv/bin/activate
 @Rins just double check. for windows i had to comment some command out to be able to run on windows in the requirements.txt
 2) Install dependencies
 ```bash
-pip install -r requirements.txt
+pip install -r requirements_win.txt
 ```
 
 3) Run the app
