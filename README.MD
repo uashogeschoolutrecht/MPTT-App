@@ -36,7 +36,7 @@ python -m venv .venv
 
 2) Install dependencies
 ```cmd
-pip install -r requirements.txt
+pip install -r requirements_win.txt
 ```
 
 3) Run the app
@@ -51,10 +51,9 @@ python -m mppt.app.mppt
 python3 -m venv .venv
 source .venv/bin/activate
 ```
-@Rins just double check. for windows i had to comment some command out to be able to run on windows in the requirements.txt
 2) Install dependencies
 ```bash
-pip install -r requirements_win.txt
+pip install -r requirements.txt
 ```
 
 3) Run the app
@@ -181,40 +180,69 @@ The SDK provides various methods to access collected data:
 
 ## Build shareable apps (macOS and Windows)
 
-We provide PyInstaller specs to bundle the GUI into a single app per platform. Build on each OS natively (you cannot build a Windows .exe from macOS, and vice versa).
+Build on each OS natively (you cannot build a Windows .exe from macOS, and vice versa).
 
-Prereqs (in your venv):
+Prereqs (inside your venv):
 
 ```bash
 pip install pyinstaller
 ```
 
-### macOS (app bundle)
+### macOS
 
-1) From the project root, run:
+1) Build the app bundle
 
 ```bash
-pyinstaller pyinstaller-mac.spec
+.venv/bin/pyinstaller --noconfirm mppt.spec
 ```
 
-2) The .app bundle will be at `dist/Spiral-Tracking-App.app`. Zip it or create a DMG to share. First run on an unsigned app may require: right-click the app -> Open -> Open.
+Output: `dist/MPPT-App.app`
 
-BLE permissions: macOS will prompt for Bluetooth access (we include usage descriptions in the bundle).
+2) Build a DMG (drag-to-Applications installer)
 
-### Windows (exe folder)
-
-1) In a Windows venv, run:
-
-```powershell
-pyinstaller pyinstaller-win.spec
+```bash
+brew install create-dmg   # once
+./build_dmg.sh
 ```
 
-2) The output will be in `dist/Spiral-Tracking-App/`. Share the whole folder or repackage with an installer if desired.
+Output: `dist/MPPT-App.dmg`
 
 Notes:
-- Build must be done on the target OS. For Apple Silicon, the app will be arm64 by default. For Intel Macs, x86_64.
-- If antivirus flags the unsigned build, add an allow-list or sign the app/binary.
-- If matplotlib/PySide6 plugins are missing, update PyInstaller to latest and retry.
+- On first launch of an unsigned app, right-click the app -> Open -> Open.
+- macOS will prompt for Bluetooth access on first run.
+
+### Windows
+
+1) Install deps (PowerShell)
+
+```powershell
+python -m venv .venv
+. .venv\Scripts\Activate.ps1
+pip install -r requirements_win.txt
+pip install pyinstaller
+```
+
+2) Build the app
+
+```powershell
+pyinstaller --noconfirm pyinstaller-win.spec
+```
+
+Output: `dist\MPPT-App\MPPT-App.exe` (+ DLLs)
+
+3) Optional: build a Windows installer (.exe)
+
+```powershell
+# Install Inno Setup first (https://jrsoftware.org/isinfo.php)
+.\n+windows\build_windows.ps1 -Python ".venv\Scripts\python.exe"
+```
+
+Output: `MPPT-App-Setup.exe` (path shown by Inno Setup)
+
+Notes:
+- Build must be done on the target OS (mac on macOS, win on Windows).
+- If antivirus flags the unsigned build, add an allow-list or code-sign the binaries.
+- If Qt/matplotlib plugins are missing, update PyInstaller and rebuild.
 
 
 ## Acknowledgments

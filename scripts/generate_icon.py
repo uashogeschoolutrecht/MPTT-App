@@ -116,6 +116,20 @@ def build_iconset(out_base: Path, style: str = "rose"):
         print(f"Skipping .icns build (iconutil not available?): {e}")
         print(f"Icon set available at: {iconset_dir}")
 
+    # Also write a Windows .ico from multiple PNG sizes
+    try:
+        ico_path = out_base.with_suffix('.ico')
+        # Use rose or spiral based on style
+        imgs = []
+        for sz in [16, 24, 32, 48, 64, 128, 256]:
+            img = draw_rose_icon(sz) if style == 'rose' else draw_spiral_icon(sz)
+            imgs.append(img)
+        # PIL saves ICO from the first image; include sizes
+        imgs[0].save(ico_path, format='ICO', sizes=[im.size for im in imgs])
+        print(f"Wrote {ico_path}")
+    except Exception as e:
+        print(f"Skipping .ico build: {e}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
