@@ -7,4 +7,5 @@
 results/*
 *.venv/
 *src/movella-dot-py/
-
+/build/
+/dist/

@@ -6,6 +6,9 @@ from collections import deque
 from typing import List, Optional
 
 import numpy as np
+import matplotlib
+# Force Qt backend for Matplotlib in the frozen app
+matplotlib.use("QtAgg", force=True)
 
 # Qt and Matplotlib Qt backend
 from PySide6.QtCore import Qt, QTimer
@@ -87,7 +90,7 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
 class TiltBallWindow(QMainWindow):
     def __init__(self, sensors: List[MovellaDOTSensor], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("MTT-App")
+        self.setWindowTitle("MPTT-App")
         self.sensors = sensors
         self.sensor: Optional[MovellaDOTSensor] = sensors[0] if sensors else None
 
@@ -1039,10 +1042,14 @@ async def init_sensors() -> List[MovellaDOTSensor]:
 
 
 async def amain():
-    sensors = await init_sensors()
+    # Try to initialize sensors, but always show the UI even if none are available
+    try:
+        sensors = await init_sensors()
+    except Exception as e:
+        print(f"Sensor initialization failed: {e}")
+        sensors = []
     if not sensors:
-        print("No sensors available. Exiting.")
-        return
+        print("No sensors available. Starting UI without sensors.")
     win = TiltBallWindow(sensors)
     win.show()
 
