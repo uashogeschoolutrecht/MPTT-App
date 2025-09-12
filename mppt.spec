@@ -58,7 +58,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name=f'{APP_NAME}.app',
-    icon=None,
+    icon='assets/appicon.icns',
     bundle_identifier='nl.hu.spiraltracking',
     info_plist={
         'NSBluetoothAlwaysUsageDescription': 'This app uses Bluetooth to connect to Movella DOT sensors.',

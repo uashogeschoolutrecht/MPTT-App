@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QLineEdit,
     QTextEdit,
+    QProgressBar,
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -981,8 +982,79 @@ class TiltBallWindow(QMainWindow):
 
 
 # ---------------------- App bootstrap ----------------------
-async def init_sensors() -> List[MovellaDOTSensor]:
-    print("Scanning for Movella DOT sensors (5 seconds)...")
+class LoadingWindow(QMainWindow):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("MPTT-App — Starting…")
+        self.setFixedSize(480, 200)
+        cw = QWidget(self)
+        self.setCentralWidget(cw)
+        v = QVBoxLayout(cw)
+        v.setContentsMargins(18, 18, 18, 18)
+        self.lbl = QLabel("Preparing…", self)
+        self.lbl.setAlignment(Qt.AlignCenter)
+        self.bar = QProgressBar(self)
+        self.bar.setRange(0, 0)  # Indeterminate
+
+        # Actions row (hidden while busy)
+        self.btn_row = QWidget(self)
+        h = QHBoxLayout(self.btn_row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        h.addStretch(1)
+        self.btn_rescan = QPushButton("Rescan", self)
+        self.btn_continue = QPushButton("Continue without sensor", self)
+        h.addWidget(self.btn_rescan)
+        h.addWidget(self.btn_continue)
+        h.addStretch(1)
+        self.btn_row.setVisible(False)
+
+        v.addStretch(1)
+        v.addWidget(self.lbl)
+        v.addSpacing(8)
+        v.addWidget(self.bar)
+        v.addSpacing(10)
+        v.addWidget(self.btn_row)
+        v.addStretch(1)
+
+        # Async choice future
+        self._choice_future = None
+        self.btn_rescan.clicked.connect(lambda: self._resolve_choice("rescan"))
+        self.btn_continue.clicked.connect(lambda: self._resolve_choice("continue"))
+
+    def set_status(self, text: str):
+        self.lbl.setText(text)
+
+    def set_busy(self, busy: bool):
+        # Busy = spinner visible and buttons hidden/disabled
+        self.bar.setRange(0, 0 if busy else 1)
+        self.btn_row.setVisible(not busy)
+        self.btn_rescan.setEnabled(not busy)
+        self.btn_continue.setEnabled(not busy)
+
+    def prompt_actions(self):
+        self.set_busy(False)
+
+    def hide_actions(self):
+        self.btn_row.setVisible(False)
+
+    def wait_for_choice(self):
+        import asyncio as _asyncio
+        if self._choice_future is None or self._choice_future.done():
+            self._choice_future = _asyncio.get_event_loop().create_future()
+        return self._choice_future
+
+    def _resolve_choice(self, value: str):
+        f = self._choice_future
+        if f is not None and not f.done():
+            f.set_result(value)
+
+
+async def init_sensors(status_cb=None) -> List[MovellaDOTSensor]:
+    msg = "Scanning for Movella DOT sensors (5 seconds)…"
+    print(msg)
+    if status_cb:
+        status_cb(msg)
     devices = await BleakScanner.discover(timeout=5.0)
     print(f"Found {len(devices)} devices:")
     for device in devices:
@@ -990,12 +1062,18 @@ async def init_sensors() -> List[MovellaDOTSensor]:
     dot_devices = [d for d in devices if d.name and ("Xsens DOT" in d.name or "Movella DOT" in d.name)]
 
     if not dot_devices:
-        print("No Movella DOT sensors found")
+        msg = "No Movella DOT sensors found"
+        print(msg)
+        if status_cb:
+            status_cb(msg)
         return []
 
     max_sensors = 1
     dot_devices = dot_devices[:max_sensors]
-    print(f"Using {len(dot_devices)} Movella DOT sensor(s)")
+    msg = f"Using {len(dot_devices)} Movella DOT sensor(s)"
+    print(msg)
+    if status_cb:
+        status_cb(msg)
 
     sensors: List[MovellaDOTSensor] = []
 
@@ -1011,12 +1089,17 @@ async def init_sensors() -> List[MovellaDOTSensor]:
         try:
             sensor = MovellaDOTSensor(config)
             sensor.client = BleakClient(device.address)
-            print(f"\nConnecting to {device.name} ({device.address})...")
+            msg = f"Connecting to {device.name}…"
+            print(f"\n{msg}")
+            if status_cb:
+                status_cb(msg)
             await sensor.client.connect()
             sensor.is_connected = True
             sensor._device_address = device.address
             sensor._device_name = device.name
 
+            if status_cb:
+                status_cb("Reading device information…")
             print("\nReading device information...")
             device_info = await sensor.get_device_info()
             sensor._device_tag = device_info.device_tag
@@ -1025,10 +1108,14 @@ async def init_sensors() -> List[MovellaDOTSensor]:
             print(f"Current Output Rate: {device_info.output_rate} Hz")
             print(f"Current Filter Profile: {device_info.filter_profile.name}")
 
+            if status_cb:
+                status_cb("Identifying sensor…")
             print("\nIdentifying sensor...")
             await sensor.identify_sensor()
             await asyncio.sleep(2)
 
+            if status_cb:
+                status_cb("Configuring sensor…")
             await sensor.configure_sensor()
             sensors.append(sensor)
             print(f"Successfully connected and configured {device.name}")
@@ -1036,22 +1123,58 @@ async def init_sensors() -> List[MovellaDOTSensor]:
             print(f"Failed to connect to {device.name}: {str(e)}")
 
     if sensors:
+        if status_cb:
+            status_cb("Starting measurements…")
         print("\nStarting measurements on all sensors...")
         await asyncio.gather(*(s.start_measurement() for s in sensors))
     return sensors
 
 
 async def amain():
+    # Show loading screen immediately
+    loader = LoadingWindow()
+    loader.show()
+    # Allow the event loop to render the loader before heavy work
+    await asyncio.sleep(0)
+
     # Try to initialize sensors, but always show the UI even if none are available
     try:
-        sensors = await init_sensors()
+        sensors = await init_sensors(status_cb=loader.set_status)
     except Exception as e:
-        print(f"Sensor initialization failed: {e}")
+        err = f"Sensor initialization failed: {e}"
+        print(err)
+        loader.set_status(err)
         sensors = []
-    if not sensors:
-        print("No sensors available. Starting UI without sensors.")
-    win = TiltBallWindow(sensors)
+
+    # If no sensors, allow the user to rescan or continue without a sensor (helps first-run permission)
+    attempt = 1
+    sensors_list: List[MovellaDOTSensor] = sensors
+    while not sensors_list:
+        loader.set_status(
+            "No sensors found. If you just granted Bluetooth permission, press Rescan or Continue without sensor."
+        )
+        loader.prompt_actions()
+        choice = await loader.wait_for_choice()
+        loader.hide_actions()
+        if choice == "continue":
+            print("Continuing without sensors.")
+            break
+        # Rescan
+        attempt += 1
+        loader.set_status(f"Rescanning (attempt {attempt})…")
+        loader.set_busy(True)
+        try:
+            sensors_list = await init_sensors(status_cb=loader.set_status)
+        except Exception as e:
+            err = f"Rescan failed: {e}"
+            print(err)
+            loader.set_status(err)
+            sensors_list = []
+        loader.set_busy(False)
+
+    win = TiltBallWindow(sensors_list)
     win.show()
+    loader.close()
 
 
 def main():
