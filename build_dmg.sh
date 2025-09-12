@@ -9,6 +9,7 @@ APP_BUNDLE="dist/${APP_NAME}.app"
 DMG_PATH="dist/${APP_NAME}.dmg"
 STAGE_DIR="dist/dmg"
 VOL_ICON="assets/appicon.icns"
+BG_IMAGE="assets/dmg_background.png"
 
 if ! command -v create-dmg >/dev/null 2>&1; then
   echo "Error: create-dmg not found. Install with: brew install create-dmg" >&2
@@ -29,9 +30,16 @@ if [ -f "$DMG_PATH" ]; then
   rm -f "$DMG_PATH"
 fi
 
+# Ensure background exists
+if [ ! -f "$BG_IMAGE" ]; then
+  echo "Generating DMG background..."
+  .venv/bin/python scripts/generate_dmg_background.py || true
+fi
+
 create-dmg \
   --volname "$APP_NAME" \
   --volicon "$VOL_ICON" \
+  --background "$BG_IMAGE" \
   --window-pos 200 120 \
   --window-size 640 400 \
   --icon-size 120 \
