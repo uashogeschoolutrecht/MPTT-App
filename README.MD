@@ -244,6 +244,13 @@ Notes:
 - If antivirus flags the unsigned build, add an allow-list or code-sign the binaries.
 - If Qt/matplotlib plugins are missing, update PyInstaller and rebuild.
 
+ SmartScreen / Windows Defender
+ - Unsigned new executables commonly trigger SmartScreen or Defender warnings.
+ - Mitigations we apply in this repo:
+    - PyInstaller build disables UPX compression on Windows (reduces AV heuristics).
+    - EXE embeds version metadata (`windows/version_info.txt`).
+ - Best mitigation: Code-sign the EXE and installer with a trusted certificate (EV recommended). If you need this, sign after building, then redistribute the signed artifacts.
+
 
 ## Acknowledgments
 
