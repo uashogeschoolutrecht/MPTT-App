@@ -39,7 +39,7 @@ from mppt.models.enums import OutputRate, FilterProfile, PayloadMode
 from bleak import BleakScanner, BleakClient
 
 
-# ---------------------- Math helpers (unchanged) ----------------------
+# ---------------------- Math helpers ----------------------
 def _quat_normalize(q: np.ndarray) -> np.ndarray:
     q = np.asarray(q, dtype=np.float64)
     n = np.linalg.norm(q, axis=-1, keepdims=True)
@@ -64,27 +64,18 @@ def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
     ], dtype=np.float64)
 
 
-def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
-    """Convert unit quaternion [w,x,y,z] to ZYX euler angles [roll, pitch, yaw] in degrees.
-    roll: x (left/right), pitch: y (forward/backward), yaw: z (twist)
-    """
-    w, x, y, z = q
-    # roll (x-axis rotation) - negated to match sensor convention
-    sinr_cosp = -2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = np.degrees(np.arctan2(sinr_cosp, cosr_cosp))
-
-    # pitch (y-axis rotation) - negated to match sensor convention
-    sinp = -2.0 * (w * y - z * x)
-    sinp = np.clip(sinp, -1.0, 1.0)
-    pitch = np.degrees(np.arcsin(sinp))
-
-    # yaw (z-axis rotation)
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = np.degrees(np.arctan2(siny_cosp, cosy_cosp))
-
-    return np.array([roll, pitch, yaw], dtype=np.float64)
+def _quat_to_roll_pitch(w, x, y, z):
+    """Convert quaternion to roll and pitch in degrees (simplified version from reference code)"""
+    import math
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.degrees(math.atan2(sinr_cosp, cosr_cosp))
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = math.degrees(math.copysign(math.pi / 2, sinp))
+    else:
+        pitch = math.degrees(math.asin(sinp))
+    return roll, pitch
 
 
 # ---------------------- Qt GUI ----------------------
@@ -102,8 +93,7 @@ class TiltBallWindow(QMainWindow):
         self.max_range = 180.0
         # Start with measurement stopped and target not moving
         self.is_running = False
-        self.calib_q: Optional[np.ndarray] = None
-        self.pending_calibration = False
+        self.neutral_q: Optional[np.ndarray] = None  # Neutral orientation for optional calibration
         # Measurement timing
         self.measure_start_t: Optional[float] = None
         # Measurement path storage (recorded while running)
@@ -178,7 +168,7 @@ class TiltBallWindow(QMainWindow):
 
         # Buttons row 1: Calibrate, Start/Stop
         row1 = QHBoxLayout()
-        self.btn_cal = QPushButton("Calibrate", self)
+        self.btn_cal = QPushButton("Set Neutral", self)
         # Default to Start when app opens
         self.btn_toggle = QPushButton("Start", self)
         row1.addWidget(self.btn_cal)
@@ -292,7 +282,7 @@ class TiltBallWindow(QMainWindow):
         self.btn_toggle.clicked.connect(self._on_toggle_run)
         self.btn_rminus.clicked.connect(lambda: self._set_range(self.xy_range - self.step))
         self.btn_rplus.clicked.connect(lambda: self._set_range(self.xy_range + self.step))
-        self.btn_exit.clicked.connect(self.close)
+        self.btn_exit.clicked.connect(self._on_exit)
         self.chk_filter.toggled.connect(self._on_filter_toggled)
         self.s_win.valueChanged.connect(self._on_filter_size_changed)
         self.s_target.valueChanged.connect(self._on_target_changed)
@@ -412,8 +402,14 @@ class TiltBallWindow(QMainWindow):
 
     # ------------- Slots -------------
     def _on_calibrate(self):
-        self.pending_calibration = True
-        print("\nWill calibrate to center on next sample...")
+        # Capture current orientation as neutral (like 'n' key in reference code)
+        data = self.sensor.get_collected_data() if self.sensor else None
+        if data and len(data.get('quaternions', [])) > 0:
+            q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
+            self.neutral_q = _quat_normalize(q_cur)
+            print("\nNeutral orientation captured for relative measurements.")
+        else:
+            print("\nNo sensor data available for calibration.")
 
     def _on_toggle_run(self):
         # Start or stop the moving target and error recording
@@ -578,14 +574,15 @@ class TiltBallWindow(QMainWindow):
             q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
             q_cur = _quat_normalize(q_cur)
 
-            if self.calib_q is None or self.pending_calibration:
-                self.calib_q = q_cur
-                self.pending_calibration = False
+            # Use direct quaternion to roll/pitch conversion (absolute orientation)
+            roll_raw, pitch_raw = _quat_to_roll_pitch(q_cur[0], q_cur[1], q_cur[2], q_cur[3])
 
-            q_rel = _quat_mul(q_cur, _quat_conj(self.calib_q))
-            q_rel = _quat_normalize(q_rel)
-
-            roll_raw, pitch_raw, _yaw = _quat_to_euler_deg(q_rel)
+            # For now, use absolute measurements (can be enhanced with relative if neutral_q is set)
+            # If you want relative measurements like in reference code:
+            # if self.neutral_q is not None:
+            #     q_rel = _quat_mul(_quat_conj(self.neutral_q), q_cur)
+            #     q_rel = _quat_normalize(q_rel)
+            #     roll_raw, pitch_raw = _quat_to_roll_pitch(q_rel[0], q_rel[1], q_rel[2], q_rel[3])
 
             roll, pitch = roll_raw, pitch_raw
 
@@ -641,7 +638,7 @@ class TiltBallWindow(QMainWindow):
                 self.samples_tx.append(float(x_t))
                 self.samples_ty.append(float(y_t))
                 self.samples_err.append(err)
-                self.samples_quat.append([float(v) for v in q_rel])
+                self.samples_quat.append([float(v) for v in q_cur])
                 self.samples_blind.append(1 if blind_active_now else 0)
 
                 # Auto-stop when elapsed reaches the selected duration
@@ -961,24 +958,107 @@ class TiltBallWindow(QMainWindow):
         self.btn_save.setText("Saved")
         self.btn_save.setEnabled(False)
 
+    def _on_exit(self):
+        """Handle exit button click"""
+        print("Exit button pressed, closing application...")
+        self.close()
+
     # ------------- Cleanup -------------
     async def shutdown(self):
+        """Properly shutdown sensors and close Bluetooth connections"""
+        print("Shutting down sensors and closing Bluetooth connections...")
         try:
             if self.sensors:
+                # Stop measurements first
+                print("Stopping measurements...")
                 await asyncio.gather(*(s.stop_measurement() for s in self.sensors), return_exceptions=True)
+                
+                # Wait a moment for measurements to stop
+                await asyncio.sleep(0.1)
+                
+                # Disconnect from all sensors
+                print("Disconnecting from sensors...")
                 await asyncio.gather(*(s.disconnect() for s in self.sensors), return_exceptions=True)
-        except Exception:
-            pass
+                
+                print("All sensors disconnected.")
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
 
     def closeEvent(self, event):  # noqa: N802
-        # Schedule async shutdown and then stop the event loop
-        asyncio.create_task(self.shutdown())
-        loop = asyncio.get_event_loop()
+        """Handle window close event with proper async cleanup"""
+        print("App closing, cleaning up Bluetooth connections...")
+        
+        # Accept the close event first
+        event.accept()
+        
+        # Try to cleanup synchronously using a blocking approach
         try:
-            loop.call_soon(loop.stop)
+            if self.sensors:
+                # Create a new event loop for cleanup since the main one might be stopping
+                import threading
+                cleanup_done = threading.Event()
+                cleanup_error = None
+                
+                def run_cleanup():
+                    nonlocal cleanup_error
+                    try:
+                        # Create new event loop for this thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        new_loop.run_until_complete(self.shutdown())
+                        new_loop.close()
+                    except Exception as e:
+                        cleanup_error = e
+                    finally:
+                        cleanup_done.set()
+                
+                # Run cleanup in separate thread to avoid blocking the UI
+                cleanup_thread = threading.Thread(target=run_cleanup, daemon=True)
+                cleanup_thread.start()
+                
+                # Wait for cleanup to complete (with timeout)
+                if cleanup_done.wait(timeout=3.0):
+                    if cleanup_error:
+                        print(f"Error during cleanup: {cleanup_error}")
+                    else:
+                        print("Bluetooth cleanup completed successfully")
+                else:
+                    print("Cleanup timeout - forcing close")
+        except Exception as e:
+            print(f"Error during close event: {e}")
+        
+        # Stop the event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon(loop.stop)
         except Exception:
             pass
+        
         super().closeEvent(event)
+
+    def __del__(self):
+        """Destructor - ensure sensors are disconnected"""
+        try:
+            if hasattr(self, 'sensors') and self.sensors:
+                print("Destructor called - attempting final cleanup...")
+                # Simple synchronous cleanup for destructor
+                for sensor in self.sensors:
+                    if hasattr(sensor, 'is_connected') and sensor.is_connected:
+                        try:
+                            if hasattr(sensor, 'client') and sensor.client:
+                                # Try to disconnect synchronously if possible
+                                import inspect
+                                if hasattr(sensor.client, 'disconnect'):
+                                    if inspect.iscoroutinefunction(sensor.client.disconnect):
+                                        print(f"Cannot async disconnect in destructor for {getattr(sensor, '_device_name', 'sensor')}")
+                                    else:
+                                        sensor.client.disconnect()
+                                        print(f"Disconnected {getattr(sensor, '_device_name', 'sensor')} in destructor")
+                        except Exception as e:
+                            print(f"Error in destructor cleanup: {e}")
+        except Exception:
+            pass  # Ignore errors in destructor
 
 
 # ---------------------- App bootstrap ----------------------
