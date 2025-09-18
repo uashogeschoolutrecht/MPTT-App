@@ -18,3 +18,5 @@ shiboken6
 six==1.17.0
 typing_extensions==4.14.1
 zipp==3.23.0
+pyinstaller
+pyinstaller-hooks-contrib
