@@ -87,6 +87,31 @@ def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
     return np.array([roll, pitch, yaw], dtype=np.float64)
 
 
+def _roll_pitch_from_quat_yawless(q: np.ndarray) -> tuple[float, float]:
+    """Compute yaw-independent tilt (roll, pitch) from unit quaternion [w,x,y,z].
+
+    Uses the gravity direction in the body frame so that heading / yaw
+    changes or magnetic disturbances do not affect roll and pitch.
+    Returns (roll_deg, pitch_deg).
+    """
+    q = _quat_normalize(q)
+    w, x, y, z = q
+
+    # Gravity in body frame (assuming world gravity along +Z): g_body = R^T * [0,0,1]
+    gx = 2.0 * (x * z + w * y)
+    gy = 2.0 * (y * z - w * x)
+    gz = 1.0 - 2.0 * (x * x + y * y)
+
+    # Yaw-independent tilt angles
+    roll = np.degrees(np.arctan2(gy, gz))            # Left/right tilt
+    pitch = np.degrees(np.arctan2(-gx, np.hypot(gy, gz)))  # Forward/backward tilt
+
+    # If UI feels inverted uncomment one or both lines below:
+    # roll = -roll
+    # pitch = -pitch
+    return float(roll), float(pitch)
+
+
 # ---------------------- Qt GUI ----------------------
 class TiltBallWindow(QMainWindow):
     def __init__(self, sensors: List[MovellaDOTSensor], parent=None):
@@ -585,9 +610,8 @@ class TiltBallWindow(QMainWindow):
             q_rel = _quat_mul(q_cur, _quat_conj(self.calib_q))
             q_rel = _quat_normalize(q_rel)
 
-            roll_raw, pitch_raw, _yaw = _quat_to_euler_deg(q_rel)
-
-            roll, pitch = roll_raw, pitch_raw
+            # Yaw-onafhankelijke tilt berekening (vervangt Euler-afleiding)
+            roll, pitch = _roll_pitch_from_quat_yawless(q_rel)
 
             if self.chk_filter.isChecked():
                 self.buf_roll.append(roll)
