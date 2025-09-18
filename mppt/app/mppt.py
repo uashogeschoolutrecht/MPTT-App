@@ -116,6 +116,20 @@ class TiltBallWindow(QMainWindow):
         self.buf_roll: deque = deque(maxlen=5)
         self.buf_pitch: deque = deque(maxlen=5)
 
+        # Performance optimization: track last values to avoid unnecessary redraws
+        self.last_ball_x = 0.0
+        self.last_ball_y = 0.0
+        self.last_target_x = 0.0
+        self.last_target_y = 0.0
+        self.last_label_text = ""
+        self.last_blind_state = False
+        self.redraw_needed = False
+        
+        # Performance optimization: cache frequently used values
+        self._cached_range_R0 = 0.55 * float(self.xy_range)
+        self._cached_range_A = 0.30 * float(self.xy_range)
+        self._skip_counter = 0  # Skip some non-essential operations
+
         # Error tracking
         # Default window equals default target duration (60s)
         self.err_window_sec = 60.0
@@ -297,7 +311,7 @@ class TiltBallWindow(QMainWindow):
 
         # Update timer
         self.timer = QTimer(self)
-        self.timer.setInterval(10)  # ~100 Hz
+        self.timer.setInterval(33)  # ~30 Hz (was 10ms/100Hz - reduced for better performance on slower computers)
         self.timer.timeout.connect(self._on_tick)
         self.timer.start()
 
@@ -357,12 +371,16 @@ class TiltBallWindow(QMainWindow):
         if abs(new_range - self.xy_range) < 1e-6:
             return
         self.xy_range = new_range
+        # Update cached values for performance
+        self._cached_range_R0 = 0.55 * float(self.xy_range)
+        self._cached_range_A = 0.30 * float(self.xy_range)
         self.ax.set_xlim(-self.xy_range, self.xy_range)
         self.ax.set_ylim(-self.xy_range, self.xy_range)
         self.theta_path, self.x_path, self.y_path = self._compute_path_arrays(self.xy_range)
         self.path_line.set_data(self.x_path, self.y_path)
         self.ax_err.set_ylim(0.0, 3.0 * self.xy_range)
         self._update_settings_label()
+        self.redraw_needed = True  # Force redraw after range change
         self.canvas.draw_idle()
 
     def _settings_text(self, filter_on: bool, n: int, tgt: int) -> str:
@@ -449,6 +467,7 @@ class TiltBallWindow(QMainWindow):
             self.samples_x.clear(); self.samples_y.clear(); self.samples_tx.clear(); self.samples_ty.clear()
             self.samples_err.clear(); self.samples_quat.clear(); self.samples_blind.clear()
             self.ax_err.set_xlim(0.0, self.err_window_sec)
+            self.redraw_needed = True  # Force redraw after clearing data
             # Snapshot blind windows for this run
             self.active_blind_start = None
             self.active_blind_end = None
@@ -512,6 +531,7 @@ class TiltBallWindow(QMainWindow):
         if not self.is_running:
             self.err_window_sec = float(val)
             self.ax_err.set_xlim(0.0, self.err_window_sec)
+            self.redraw_needed = True
             self.canvas.draw_idle()
 
     def _on_blind_toggled(self, checked: bool):
@@ -559,14 +579,18 @@ class TiltBallWindow(QMainWindow):
             now = time.monotonic()
             elapsed = (now - self.t0) % period
             self.theta_current = (elapsed / period) * (2.0 * np.pi)
-        # 8-lobed rose curve with offset: r(θ) = R0 + A*cos(8θ)
-        # Choose R0 and A so that r_min > 0 (avoid center) and r_max < range (stay on screen)
-        R0 = 0.55 * float(self.xy_range)
-        A = 0.30 * float(self.xy_range)
-        r_t = R0 + A * np.cos(8.0 * self.theta_current)
+        
+        # Use cached values for better performance
+        r_t = self._cached_range_R0 + self._cached_range_A * np.cos(8.0 * self.theta_current)
         x_t = r_t * np.cos(self.theta_current)
         y_t = r_t * np.sin(self.theta_current)
-        self.target_dot.set_data([x_t], [y_t])
+        
+        # Only update target if position changed significantly (optimization)
+        if abs(x_t - self.last_target_x) > 0.1 or abs(y_t - self.last_target_y) > 0.1:
+            self.target_dot.set_data([x_t], [y_t])
+            self.last_target_x = x_t
+            self.last_target_y = y_t
+            self.redraw_needed = True
 
         # Always read latest sensor data to allow practicing with the red dot
         data = self.sensor.get_collected_data() if self.sensor else None
@@ -611,13 +635,31 @@ class TiltBallWindow(QMainWindow):
                     if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
                         blind_active_now = True
 
-            # Hide or show the red ball
-            self.ball.set_visible(not blind_active_now)
+            # Only update ball if position or visibility changed significantly (optimization)
+            position_changed = abs(x - self.last_ball_x) > 0.05 or abs(y - self.last_ball_y) > 0.05
+            visibility_changed = blind_active_now != self.last_blind_state
+            
+            if position_changed or visibility_changed:
+                self.ball.set_visible(not blind_active_now)
+                self.ball.set_data([x], [y])
+                self.last_ball_x = x
+                self.last_ball_y = y
+                self.last_blind_state = blind_active_now
+                self.redraw_needed = True
 
-            self.ball.set_data([x], [y])
+            # Only update label if text actually changed (optimization)
+            new_label_text = f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°"
+            if new_label_text != self.last_label_text:
+                self.lbl_deg.setText(new_label_text)
+                self.last_label_text = new_label_text
 
-            self.lbl_deg.setText(f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°")
-            print(f"Roll:{roll_f:+.1f}°, Pitch:{pitch_f:+.1f}°", end='\r')
+            # Reduce console output frequency for performance
+            if hasattr(self, '_last_print_time'):
+                if time.time() - self._last_print_time > 0.1:  # Print max 10Hz
+                    print(f"Roll:{roll_f:+.1f}°, Pitch:{pitch_f:+.1f}°", end='\r')
+                    self._last_print_time = time.time()
+            else:
+                self._last_print_time = time.time()
 
             # Error plot and logging: record only while running
             if self.is_running and self.measure_start_t is not None:
@@ -629,6 +671,8 @@ class TiltBallWindow(QMainWindow):
                 self.err_times.append(elapsed_run); self.err_values.append(err)
                 self.err_line.set_data(list(self.err_times), list(self.err_values))
                 self.ax_err.set_xlim(0.0, self.err_window_sec)
+                self.redraw_needed = True  # Force redraw when recording
+                
                 # Logs
                 self.samples_t.append(elapsed_run)
                 self.samples_roll.append(roll_f)
@@ -648,7 +692,10 @@ class TiltBallWindow(QMainWindow):
                     self.btn_toggle.setText("Start")
                     self.btn_save.setEnabled(True)
 
-        self.canvas.draw_idle()
+        # Only redraw if something actually changed (major performance optimization)
+        if self.redraw_needed:
+            self.canvas.draw_idle()
+            self.redraw_needed = False
 
     def _finalize_measurement_path(self):
         """Show the recorded measurement path on the main plot."""
