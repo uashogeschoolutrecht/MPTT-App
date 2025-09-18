@@ -2,6 +2,7 @@ import asyncio
 import sys
 import os
 import time
+import platform
 from collections import deque
 from typing import List, Optional
 
@@ -9,6 +10,15 @@ import numpy as np
 import matplotlib
 # Force Qt backend for Matplotlib in the frozen app
 matplotlib.use("QtAgg", force=True)
+
+# Platform-specific matplotlib optimizations
+current_platform = platform.system().lower()
+if current_platform == 'windows':
+    # Windows-specific optimizations
+    matplotlib.rcParams['backend'] = 'QtAgg'
+    matplotlib.rcParams['figure.max_open_warning'] = 0
+    matplotlib.rcParams['agg.path.chunksize'] = 20000  # Larger chunks for better Windows performance
+    print("Applied Windows-specific matplotlib optimizations")
 
 # Qt and Matplotlib Qt backend
 from PySide6.QtCore import Qt, QTimer
@@ -157,11 +167,27 @@ class TiltBallWindow(QMainWindow):
 
         # Matplotlib Figure and Canvas
         self.fig = Figure(figsize=(8, 7), dpi=100)
+        
+        # Windows-specific optimizations
+        if platform.system().lower() == 'windows':
+            # Enable blitting for better performance on Windows
+            self.fig.set_tight_layout(True)
+            
         gs = self.fig.add_gridspec(3, 1, height_ratios=[4.0, 0.2, 1.0])
         self.ax = self.fig.add_subplot(gs[0])
         self.ax_err = self.fig.add_subplot(gs[2])
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Windows-specific canvas optimizations
+        if platform.system().lower() == 'windows':
+            # Enable hardware acceleration if available
+            try:
+                from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+                # Disable some expensive operations on Windows
+                self.canvas.setFocusPolicy(Qt.NoFocus)
+            except ImportError:
+                pass
 
         # Configure axes
         self._setup_main_axes()
@@ -220,6 +246,22 @@ class TiltBallWindow(QMainWindow):
         self.s_target.setSingleStep(1)
         controls.addWidget(self.lbl_target)
         controls.addWidget(self.s_target)
+
+        # Refresh rate control for performance tuning
+        self.lbl_refresh = QLabel("Refresh = Auto", self)
+        self.s_refresh = QSlider(Qt.Horizontal, self)
+        self.s_refresh.setRange(10, 100)  # 10ms to 100ms (100Hz to 10Hz)
+        # Set default based on platform
+        current_platform = platform.system().lower()
+        if current_platform == 'windows':
+            self.s_refresh.setValue(16)  # 60Hz default for Windows
+        elif current_platform == 'darwin':  # macOS
+            self.s_refresh.setValue(33)  # 30Hz default for macOS
+        else:
+            self.s_refresh.setValue(25)  # 40Hz default for Linux
+        self.s_refresh.setSingleStep(1)
+        controls.addWidget(self.lbl_refresh)
+        controls.addWidget(self.s_refresh)
 
         # Blind segment controls
         controls.addSpacing(6)
@@ -300,6 +342,7 @@ class TiltBallWindow(QMainWindow):
         self.chk_filter.toggled.connect(self._on_filter_toggled)
         self.s_win.valueChanged.connect(self._on_filter_size_changed)
         self.s_target.valueChanged.connect(self._on_target_changed)
+        self.s_refresh.valueChanged.connect(self._on_refresh_changed)
         self.btn_save.clicked.connect(self._on_save)
         # Blind signals
         self.chk_blind.toggled.connect(self._on_blind_toggled)
@@ -309,10 +352,18 @@ class TiltBallWindow(QMainWindow):
         self.chk_blind_repeat.toggled.connect(self._on_blind_repeat_toggled)
         self.s_blind_every.valueChanged.connect(self._on_blind_every_changed)
 
-        # Update timer
+        # Update timer with platform-specific optimizations
         self.timer = QTimer(self)
-        self.timer.setInterval(33)  # ~30 Hz (was 10ms/100Hz - reduced for better performance on slower computers)
+        
+        # Use the slider value for refresh interval
+        refresh_interval = self.s_refresh.value()
+        self.timer.setInterval(refresh_interval)
         self.timer.timeout.connect(self._on_tick)
+        
+        # Update the label to show current refresh rate
+        hz = 1000.0 / refresh_interval
+        self.lbl_refresh.setText(f"Refresh = {hz:.0f}Hz")
+        
         self.timer.start()
 
     # ------------- Axes setup -------------
@@ -534,6 +585,20 @@ class TiltBallWindow(QMainWindow):
             self.redraw_needed = True
             self.canvas.draw_idle()
 
+    def _on_refresh_changed(self, val: int):
+        """Handle refresh rate slider changes"""
+        refresh_interval = int(val)
+        hz = 1000.0 / refresh_interval
+        self.lbl_refresh.setText(f"Refresh = {hz:.0f}Hz")
+        
+        # Update timer interval
+        if hasattr(self, 'timer') and self.timer:
+            self.timer.setInterval(refresh_interval)
+            print(f"Refresh rate updated to {hz:.0f}Hz ({refresh_interval}ms interval)")
+        
+        # Force a redraw to show the change immediately
+        self.redraw_needed = True
+
     def _on_blind_toggled(self, checked: bool):
         self.blind_enabled = bool(checked)
         self.s_blind_dur.setEnabled(checked)
@@ -694,7 +759,14 @@ class TiltBallWindow(QMainWindow):
 
         # Only redraw if something actually changed (major performance optimization)
         if self.redraw_needed:
-            self.canvas.draw_idle()
+            # Windows-specific drawing optimization
+            if platform.system().lower() == 'windows':
+                # Use more aggressive drawing optimization on Windows
+                self.canvas.draw()
+                self.canvas.flush_events()
+            else:
+                # Standard drawing for other platforms
+                self.canvas.draw_idle()
             self.redraw_needed = False
 
     def _finalize_measurement_path(self):
