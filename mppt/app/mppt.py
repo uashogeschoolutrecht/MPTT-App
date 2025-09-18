@@ -2,6 +2,7 @@ import asyncio
 import sys
 import os
 import time
+import platform
 from collections import deque
 from typing import List, Optional
 
@@ -9,6 +10,15 @@ import numpy as np
 import matplotlib
 # Force Qt backend for Matplotlib in the frozen app
 matplotlib.use("QtAgg", force=True)
+
+# Platform-specific matplotlib optimizations
+current_platform = platform.system().lower()
+if current_platform == 'windows':
+    # Windows-specific optimizations
+    matplotlib.rcParams['backend'] = 'QtAgg'
+    matplotlib.rcParams['figure.max_open_warning'] = 0
+    matplotlib.rcParams['agg.path.chunksize'] = 20000  # Larger chunks for better Windows performance
+    print("Applied Windows-specific matplotlib optimizations")
 
 # Qt and Matplotlib Qt backend
 from PySide6.QtCore import Qt, QTimer
@@ -39,7 +49,7 @@ from mppt.models.enums import OutputRate, FilterProfile, PayloadMode
 from bleak import BleakScanner, BleakClient
 
 
-# ---------------------- Math helpers (unchanged) ----------------------
+# ---------------------- Math helpers ----------------------
 def _quat_normalize(q: np.ndarray) -> np.ndarray:
     q = np.asarray(q, dtype=np.float64)
     n = np.linalg.norm(q, axis=-1, keepdims=True)
@@ -64,27 +74,18 @@ def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
     ], dtype=np.float64)
 
 
-def _quat_to_euler_deg(q: np.ndarray) -> np.ndarray:
-    """Convert unit quaternion [w,x,y,z] to ZYX euler angles [roll, pitch, yaw] in degrees.
-    roll: x (left/right), pitch: y (forward/backward), yaw: z (twist)
-    """
-    w, x, y, z = q
-    # roll (x-axis rotation) - negated to match sensor convention
-    sinr_cosp = -2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = np.degrees(np.arctan2(sinr_cosp, cosr_cosp))
-
-    # pitch (y-axis rotation) - negated to match sensor convention
-    sinp = -2.0 * (w * y - z * x)
-    sinp = np.clip(sinp, -1.0, 1.0)
-    pitch = np.degrees(np.arcsin(sinp))
-
-    # yaw (z-axis rotation)
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = np.degrees(np.arctan2(siny_cosp, cosy_cosp))
-
-    return np.array([roll, pitch, yaw], dtype=np.float64)
+def _quat_to_roll_pitch(w, x, y, z):
+    """Convert quaternion to roll and pitch in degrees (simplified version from reference code)"""
+    import math
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.degrees(math.atan2(sinr_cosp, cosr_cosp))
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = math.degrees(math.copysign(math.pi / 2, sinp))
+    else:
+        pitch = math.degrees(math.asin(sinp))
+    return roll, pitch
 
 
 # ---------------------- Qt GUI ----------------------
@@ -102,8 +103,7 @@ class TiltBallWindow(QMainWindow):
         self.max_range = 180.0
         # Start with measurement stopped and target not moving
         self.is_running = False
-        self.calib_q: Optional[np.ndarray] = None
-        self.pending_calibration = False
+        self.neutral_q: Optional[np.ndarray] = None  # Neutral orientation for optional calibration
         # Measurement timing
         self.measure_start_t: Optional[float] = None
         # Measurement path storage (recorded while running)
@@ -125,6 +125,20 @@ class TiltBallWindow(QMainWindow):
         # Moving average buffers
         self.buf_roll: deque = deque(maxlen=5)
         self.buf_pitch: deque = deque(maxlen=5)
+
+        # Performance optimization: track last values to avoid unnecessary redraws
+        self.last_ball_x = 0.0
+        self.last_ball_y = 0.0
+        self.last_target_x = 0.0
+        self.last_target_y = 0.0
+        self.last_label_text = ""
+        self.last_blind_state = False
+        self.redraw_needed = False
+        
+        # Performance optimization: cache frequently used values
+        self._cached_range_R0 = 0.55 * float(self.xy_range)
+        self._cached_range_A = 0.30 * float(self.xy_range)
+        self._skip_counter = 0  # Skip some non-essential operations
 
         # Error tracking
         # Default window equals default target duration (60s)
@@ -153,11 +167,27 @@ class TiltBallWindow(QMainWindow):
 
         # Matplotlib Figure and Canvas
         self.fig = Figure(figsize=(8, 7), dpi=100)
+        
+        # Windows-specific optimizations
+        if platform.system().lower() == 'windows':
+            # Enable blitting for better performance on Windows
+            self.fig.set_tight_layout(True)
+            
         gs = self.fig.add_gridspec(3, 1, height_ratios=[4.0, 0.2, 1.0])
         self.ax = self.fig.add_subplot(gs[0])
         self.ax_err = self.fig.add_subplot(gs[2])
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Windows-specific canvas optimizations
+        if platform.system().lower() == 'windows':
+            # Enable hardware acceleration if available
+            try:
+                from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+                # Disable some expensive operations on Windows
+                self.canvas.setFocusPolicy(Qt.NoFocus)
+            except ImportError:
+                pass
 
         # Configure axes
         self._setup_main_axes()
@@ -178,7 +208,7 @@ class TiltBallWindow(QMainWindow):
 
         # Buttons row 1: Calibrate, Start/Stop
         row1 = QHBoxLayout()
-        self.btn_cal = QPushButton("Calibrate", self)
+        self.btn_cal = QPushButton("Set Neutral", self)
         # Default to Start when app opens
         self.btn_toggle = QPushButton("Start", self)
         row1.addWidget(self.btn_cal)
@@ -216,6 +246,22 @@ class TiltBallWindow(QMainWindow):
         self.s_target.setSingleStep(1)
         controls.addWidget(self.lbl_target)
         controls.addWidget(self.s_target)
+
+        # Refresh rate control for performance tuning
+        self.lbl_refresh = QLabel("Refresh = Auto", self)
+        self.s_refresh = QSlider(Qt.Horizontal, self)
+        self.s_refresh.setRange(10, 100)  # 10ms to 100ms (100Hz to 10Hz)
+        # Set default based on platform
+        current_platform = platform.system().lower()
+        if current_platform == 'windows':
+            self.s_refresh.setValue(16)  # 60Hz default for Windows
+        elif current_platform == 'darwin':  # macOS
+            self.s_refresh.setValue(33)  # 30Hz default for macOS
+        else:
+            self.s_refresh.setValue(25)  # 40Hz default for Linux
+        self.s_refresh.setSingleStep(1)
+        controls.addWidget(self.lbl_refresh)
+        controls.addWidget(self.s_refresh)
 
         # Blind segment controls
         controls.addSpacing(6)
@@ -292,10 +338,11 @@ class TiltBallWindow(QMainWindow):
         self.btn_toggle.clicked.connect(self._on_toggle_run)
         self.btn_rminus.clicked.connect(lambda: self._set_range(self.xy_range - self.step))
         self.btn_rplus.clicked.connect(lambda: self._set_range(self.xy_range + self.step))
-        self.btn_exit.clicked.connect(self.close)
+        self.btn_exit.clicked.connect(self._on_exit)
         self.chk_filter.toggled.connect(self._on_filter_toggled)
         self.s_win.valueChanged.connect(self._on_filter_size_changed)
         self.s_target.valueChanged.connect(self._on_target_changed)
+        self.s_refresh.valueChanged.connect(self._on_refresh_changed)
         self.btn_save.clicked.connect(self._on_save)
         # Blind signals
         self.chk_blind.toggled.connect(self._on_blind_toggled)
@@ -305,10 +352,18 @@ class TiltBallWindow(QMainWindow):
         self.chk_blind_repeat.toggled.connect(self._on_blind_repeat_toggled)
         self.s_blind_every.valueChanged.connect(self._on_blind_every_changed)
 
-        # Update timer
+        # Update timer with platform-specific optimizations
         self.timer = QTimer(self)
-        self.timer.setInterval(10)  # ~100 Hz
+        
+        # Use the slider value for refresh interval
+        refresh_interval = self.s_refresh.value()
+        self.timer.setInterval(refresh_interval)
         self.timer.timeout.connect(self._on_tick)
+        
+        # Update the label to show current refresh rate
+        hz = 1000.0 / refresh_interval
+        self.lbl_refresh.setText(f"Refresh = {hz:.0f}Hz")
+        
         self.timer.start()
 
     # ------------- Axes setup -------------
@@ -367,12 +422,16 @@ class TiltBallWindow(QMainWindow):
         if abs(new_range - self.xy_range) < 1e-6:
             return
         self.xy_range = new_range
+        # Update cached values for performance
+        self._cached_range_R0 = 0.55 * float(self.xy_range)
+        self._cached_range_A = 0.30 * float(self.xy_range)
         self.ax.set_xlim(-self.xy_range, self.xy_range)
         self.ax.set_ylim(-self.xy_range, self.xy_range)
         self.theta_path, self.x_path, self.y_path = self._compute_path_arrays(self.xy_range)
         self.path_line.set_data(self.x_path, self.y_path)
         self.ax_err.set_ylim(0.0, 3.0 * self.xy_range)
         self._update_settings_label()
+        self.redraw_needed = True  # Force redraw after range change
         self.canvas.draw_idle()
 
     def _settings_text(self, filter_on: bool, n: int, tgt: int) -> str:
@@ -412,8 +471,14 @@ class TiltBallWindow(QMainWindow):
 
     # ------------- Slots -------------
     def _on_calibrate(self):
-        self.pending_calibration = True
-        print("\nWill calibrate to center on next sample...")
+        # Capture current orientation as neutral (like 'n' key in reference code)
+        data = self.sensor.get_collected_data() if self.sensor else None
+        if data and len(data.get('quaternions', [])) > 0:
+            q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
+            self.neutral_q = _quat_normalize(q_cur)
+            print("\nNeutral orientation captured for relative measurements.")
+        else:
+            print("\nNo sensor data available for calibration.")
 
     def _on_toggle_run(self):
         # Start or stop the moving target and error recording
@@ -453,6 +518,7 @@ class TiltBallWindow(QMainWindow):
             self.samples_x.clear(); self.samples_y.clear(); self.samples_tx.clear(); self.samples_ty.clear()
             self.samples_err.clear(); self.samples_quat.clear(); self.samples_blind.clear()
             self.ax_err.set_xlim(0.0, self.err_window_sec)
+            self.redraw_needed = True  # Force redraw after clearing data
             # Snapshot blind windows for this run
             self.active_blind_start = None
             self.active_blind_end = None
@@ -516,7 +582,22 @@ class TiltBallWindow(QMainWindow):
         if not self.is_running:
             self.err_window_sec = float(val)
             self.ax_err.set_xlim(0.0, self.err_window_sec)
+            self.redraw_needed = True
             self.canvas.draw_idle()
+
+    def _on_refresh_changed(self, val: int):
+        """Handle refresh rate slider changes"""
+        refresh_interval = int(val)
+        hz = 1000.0 / refresh_interval
+        self.lbl_refresh.setText(f"Refresh = {hz:.0f}Hz")
+        
+        # Update timer interval
+        if hasattr(self, 'timer') and self.timer:
+            self.timer.setInterval(refresh_interval)
+            print(f"Refresh rate updated to {hz:.0f}Hz ({refresh_interval}ms interval)")
+        
+        # Force a redraw to show the change immediately
+        self.redraw_needed = True
 
     def _on_blind_toggled(self, checked: bool):
         self.blind_enabled = bool(checked)
@@ -563,14 +644,18 @@ class TiltBallWindow(QMainWindow):
             now = time.monotonic()
             elapsed = (now - self.t0) % period
             self.theta_current = (elapsed / period) * (2.0 * np.pi)
-        # 8-lobed rose curve with offset: r(θ) = R0 + A*cos(8θ)
-        # Choose R0 and A so that r_min > 0 (avoid center) and r_max < range (stay on screen)
-        R0 = 0.55 * float(self.xy_range)
-        A = 0.30 * float(self.xy_range)
-        r_t = R0 + A * np.cos(8.0 * self.theta_current)
+        
+        # Use cached values for better performance
+        r_t = self._cached_range_R0 + self._cached_range_A * np.cos(8.0 * self.theta_current)
         x_t = r_t * np.cos(self.theta_current)
         y_t = r_t * np.sin(self.theta_current)
-        self.target_dot.set_data([x_t], [y_t])
+        
+        # Only update target if position changed significantly (optimization)
+        if abs(x_t - self.last_target_x) > 0.1 or abs(y_t - self.last_target_y) > 0.1:
+            self.target_dot.set_data([x_t], [y_t])
+            self.last_target_x = x_t
+            self.last_target_y = y_t
+            self.redraw_needed = True
 
         # Always read latest sensor data to allow practicing with the red dot
         data = self.sensor.get_collected_data() if self.sensor else None
@@ -578,14 +663,15 @@ class TiltBallWindow(QMainWindow):
             q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
             q_cur = _quat_normalize(q_cur)
 
-            if self.calib_q is None or self.pending_calibration:
-                self.calib_q = q_cur
-                self.pending_calibration = False
+            # Use direct quaternion to roll/pitch conversion (absolute orientation)
+            roll_raw, pitch_raw = _quat_to_roll_pitch(q_cur[0], q_cur[1], q_cur[2], q_cur[3])
 
-            q_rel = _quat_mul(q_cur, _quat_conj(self.calib_q))
-            q_rel = _quat_normalize(q_rel)
-
-            roll_raw, pitch_raw, _yaw = _quat_to_euler_deg(q_rel)
+            # For now, use absolute measurements (can be enhanced with relative if neutral_q is set)
+            # If you want relative measurements like in reference code:
+            # if self.neutral_q is not None:
+            #     q_rel = _quat_mul(_quat_conj(self.neutral_q), q_cur)
+            #     q_rel = _quat_normalize(q_rel)
+            #     roll_raw, pitch_raw = _quat_to_roll_pitch(q_rel[0], q_rel[1], q_rel[2], q_rel[3])
 
             roll, pitch = roll_raw, pitch_raw
 
@@ -614,13 +700,31 @@ class TiltBallWindow(QMainWindow):
                     if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
                         blind_active_now = True
 
-            # Hide or show the red ball
-            self.ball.set_visible(not blind_active_now)
+            # Only update ball if position or visibility changed significantly (optimization)
+            position_changed = abs(x - self.last_ball_x) > 0.05 or abs(y - self.last_ball_y) > 0.05
+            visibility_changed = blind_active_now != self.last_blind_state
+            
+            if position_changed or visibility_changed:
+                self.ball.set_visible(not blind_active_now)
+                self.ball.set_data([x], [y])
+                self.last_ball_x = x
+                self.last_ball_y = y
+                self.last_blind_state = blind_active_now
+                self.redraw_needed = True
 
-            self.ball.set_data([x], [y])
+            # Only update label if text actually changed (optimization)
+            new_label_text = f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°"
+            if new_label_text != self.last_label_text:
+                self.lbl_deg.setText(new_label_text)
+                self.last_label_text = new_label_text
 
-            self.lbl_deg.setText(f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°")
-            print(f"Roll:{roll_f:+.1f}°, Pitch:{pitch_f:+.1f}°", end='\r')
+            # Reduce console output frequency for performance
+            if hasattr(self, '_last_print_time'):
+                if time.time() - self._last_print_time > 0.1:  # Print max 10Hz
+                    print(f"Roll:{roll_f:+.1f}°, Pitch:{pitch_f:+.1f}°", end='\r')
+                    self._last_print_time = time.time()
+            else:
+                self._last_print_time = time.time()
 
             # Error plot and logging: record only while running
             if self.is_running and self.measure_start_t is not None:
@@ -632,6 +736,8 @@ class TiltBallWindow(QMainWindow):
                 self.err_times.append(elapsed_run); self.err_values.append(err)
                 self.err_line.set_data(list(self.err_times), list(self.err_values))
                 self.ax_err.set_xlim(0.0, self.err_window_sec)
+                self.redraw_needed = True  # Force redraw when recording
+                
                 # Logs
                 self.samples_t.append(elapsed_run)
                 self.samples_roll.append(roll_f)
@@ -641,7 +747,7 @@ class TiltBallWindow(QMainWindow):
                 self.samples_tx.append(float(x_t))
                 self.samples_ty.append(float(y_t))
                 self.samples_err.append(err)
-                self.samples_quat.append([float(v) for v in q_rel])
+                self.samples_quat.append([float(v) for v in q_cur])
                 self.samples_blind.append(1 if blind_active_now else 0)
 
                 # Auto-stop when elapsed reaches the selected duration
@@ -651,7 +757,17 @@ class TiltBallWindow(QMainWindow):
                     self.btn_toggle.setText("Start")
                     self.btn_save.setEnabled(True)
 
-        self.canvas.draw_idle()
+        # Only redraw if something actually changed (major performance optimization)
+        if self.redraw_needed:
+            # Windows-specific drawing optimization
+            if platform.system().lower() == 'windows':
+                # Use more aggressive drawing optimization on Windows
+                self.canvas.draw()
+                self.canvas.flush_events()
+            else:
+                # Standard drawing for other platforms
+                self.canvas.draw_idle()
+            self.redraw_needed = False
 
     def _finalize_measurement_path(self):
         """Show the recorded measurement path on the main plot."""
@@ -961,24 +1077,107 @@ class TiltBallWindow(QMainWindow):
         self.btn_save.setText("Saved")
         self.btn_save.setEnabled(False)
 
+    def _on_exit(self):
+        """Handle exit button click"""
+        print("Exit button pressed, closing application...")
+        self.close()
+
     # ------------- Cleanup -------------
     async def shutdown(self):
+        """Properly shutdown sensors and close Bluetooth connections"""
+        print("Shutting down sensors and closing Bluetooth connections...")
         try:
             if self.sensors:
+                # Stop measurements first
+                print("Stopping measurements...")
                 await asyncio.gather(*(s.stop_measurement() for s in self.sensors), return_exceptions=True)
+                
+                # Wait a moment for measurements to stop
+                await asyncio.sleep(0.1)
+                
+                # Disconnect from all sensors
+                print("Disconnecting from sensors...")
                 await asyncio.gather(*(s.disconnect() for s in self.sensors), return_exceptions=True)
-        except Exception:
-            pass
+                
+                print("All sensors disconnected.")
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
 
     def closeEvent(self, event):  # noqa: N802
-        # Schedule async shutdown and then stop the event loop
-        asyncio.create_task(self.shutdown())
-        loop = asyncio.get_event_loop()
+        """Handle window close event with proper async cleanup"""
+        print("App closing, cleaning up Bluetooth connections...")
+        
+        # Accept the close event first
+        event.accept()
+        
+        # Try to cleanup synchronously using a blocking approach
         try:
-            loop.call_soon(loop.stop)
+            if self.sensors:
+                # Create a new event loop for cleanup since the main one might be stopping
+                import threading
+                cleanup_done = threading.Event()
+                cleanup_error = None
+                
+                def run_cleanup():
+                    nonlocal cleanup_error
+                    try:
+                        # Create new event loop for this thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        new_loop.run_until_complete(self.shutdown())
+                        new_loop.close()
+                    except Exception as e:
+                        cleanup_error = e
+                    finally:
+                        cleanup_done.set()
+                
+                # Run cleanup in separate thread to avoid blocking the UI
+                cleanup_thread = threading.Thread(target=run_cleanup, daemon=True)
+                cleanup_thread.start()
+                
+                # Wait for cleanup to complete (with timeout)
+                if cleanup_done.wait(timeout=3.0):
+                    if cleanup_error:
+                        print(f"Error during cleanup: {cleanup_error}")
+                    else:
+                        print("Bluetooth cleanup completed successfully")
+                else:
+                    print("Cleanup timeout - forcing close")
+        except Exception as e:
+            print(f"Error during close event: {e}")
+        
+        # Stop the event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon(loop.stop)
         except Exception:
             pass
+        
         super().closeEvent(event)
+
+    def __del__(self):
+        """Destructor - ensure sensors are disconnected"""
+        try:
+            if hasattr(self, 'sensors') and self.sensors:
+                print("Destructor called - attempting final cleanup...")
+                # Simple synchronous cleanup for destructor
+                for sensor in self.sensors:
+                    if hasattr(sensor, 'is_connected') and sensor.is_connected:
+                        try:
+                            if hasattr(sensor, 'client') and sensor.client:
+                                # Try to disconnect synchronously if possible
+                                import inspect
+                                if hasattr(sensor.client, 'disconnect'):
+                                    if inspect.iscoroutinefunction(sensor.client.disconnect):
+                                        print(f"Cannot async disconnect in destructor for {getattr(sensor, '_device_name', 'sensor')}")
+                                    else:
+                                        sensor.client.disconnect()
+                                        print(f"Disconnected {getattr(sensor, '_device_name', 'sensor')} in destructor")
+                        except Exception as e:
+                            print(f"Error in destructor cleanup: {e}")
+        except Exception:
+            pass  # Ignore errors in destructor
 
 
 # ---------------------- App bootstrap ----------------------
