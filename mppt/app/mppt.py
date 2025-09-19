@@ -173,6 +173,16 @@ class TiltBallWindow(QMainWindow):
             # Enable blitting for better performance on Windows
             self.fig.set_tight_layout(True)
             
+        # Blitting support flags/state (primarily used on Windows)
+        self._use_blit = (platform.system().lower() == 'windows')
+        self._bg_main = None    
+        self._bg_err = None
+        self._cid_draw = None
+        self._main_changed = False
+        self._err_changed = False
+        self._last_err_redraw = 0.0
+        self._err_redraw_interval = 0.10  # seconds, ~10 Hz updates for error plot
+        
         gs = self.fig.add_gridspec(3, 1, height_ratios=[4.0, 0.2, 1.0])
         self.ax = self.fig.add_subplot(gs[0])
         self.ax_err = self.fig.add_subplot(gs[2])
@@ -192,6 +202,9 @@ class TiltBallWindow(QMainWindow):
         # Configure axes
         self._setup_main_axes()
         self._setup_error_axes()
+        # Initialize blitting backgrounds after first full draw
+        if self._use_blit:
+            self._init_blitting()
 
         root.addWidget(self.canvas, 2)
 
@@ -392,6 +405,20 @@ class TiltBallWindow(QMainWindow):
         self.meas_blind_line.set_visible(False)
         self.ax.legend(loc='upper right', fontsize=9)
 
+        # Performance: reduce AA and mark dynamic artists animated for blitting
+        try:
+            self.path_line.set_antialiased(False)
+            self.ball.set_antialiased(False)
+            self.target_dot.set_antialiased(False)
+        except Exception:
+            pass
+        if self._use_blit:
+            try:
+                self.ball.set_animated(True)
+                self.target_dot.set_animated(True)
+            except Exception:
+                pass
+
         self.canvas.draw_idle()
 
     def _setup_error_axes(self):
@@ -401,9 +428,42 @@ class TiltBallWindow(QMainWindow):
         self.ax_err.set_ylim(0.0, 3.0 * self.xy_range)
         self.ax_err.grid(True, linestyle=':', alpha=0.3)
         (self.err_line,) = self.ax_err.plot([], [], color='tab:red', lw=1.0)
+        try:
+            self.err_line.set_antialiased(False)
+            if self._use_blit:
+                self.err_line.set_animated(True)
+        except Exception:
+            pass
         # Placeholder for blind shading
         self.err_blind_span = None
         self.canvas.draw_idle()
+
+    # ------------- Blitting helpers -------------
+    def _init_blitting(self):
+        """Prepare backgrounds and connect draw event to recache on resize/redraw."""
+        try:
+            # Force an initial full draw so backgrounds exist
+            self.canvas.draw()
+            self._cache_backgrounds()
+            # Re-cache when Matplotlib performs a full draw (resize, legend changes, etc.)
+            self._cid_draw = self.canvas.mpl_connect('draw_event', self._on_mpl_draw)
+        except Exception:
+            # Fallback if anything goes wrong
+            self._use_blit = False
+
+    def _on_mpl_draw(self, _event):
+        try:
+            self._cache_backgrounds()
+        except Exception:
+            pass
+
+    def _cache_backgrounds(self):
+        try:
+            self._bg_main = self.canvas.copy_from_bbox(self.ax.bbox)
+            self._bg_err = self.canvas.copy_from_bbox(self.ax_err.bbox)
+        except Exception:
+            self._bg_main = None
+            self._bg_err = None
 
     # ------------- Helpers -------------
     def _compute_path_arrays(self, range_val: float):
@@ -432,7 +492,11 @@ class TiltBallWindow(QMainWindow):
         self.ax_err.set_ylim(0.0, 3.0 * self.xy_range)
         self._update_settings_label()
         self.redraw_needed = True  # Force redraw after range change
-        self.canvas.draw_idle()
+        # Full redraw so backgrounds update
+        if self._use_blit:
+            self.canvas.draw()
+        else:
+            self.canvas.draw_idle()
 
     def _settings_text(self, filter_on: bool, n: int, tgt: int) -> str:
         # Be robust during __init__: blind controls may not be created yet
@@ -596,8 +660,7 @@ class TiltBallWindow(QMainWindow):
             self.timer.setInterval(refresh_interval)
             print(f"Refresh rate updated to {hz:.0f}Hz ({refresh_interval}ms interval)")
         
-        # Force a redraw to show the change immediately
-        self.redraw_needed = True
+    # No need to force full redraw here; next tick will update
 
     def _on_blind_toggled(self, checked: bool):
         self.blind_enabled = bool(checked)
@@ -656,6 +719,7 @@ class TiltBallWindow(QMainWindow):
             self.last_target_x = x_t
             self.last_target_y = y_t
             self.redraw_needed = True
+            self._main_changed = True
 
         # Always read latest sensor data to allow practicing with the red dot
         data = self.sensor.get_collected_data() if self.sensor else None
@@ -711,6 +775,7 @@ class TiltBallWindow(QMainWindow):
                 self.last_ball_y = y
                 self.last_blind_state = blind_active_now
                 self.redraw_needed = True
+                self._main_changed = True
 
             # Only update label if text actually changed (optimization)
             new_label_text = f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°"
@@ -734,9 +799,13 @@ class TiltBallWindow(QMainWindow):
                 self.meas_x.append(x); self.meas_y.append(y)
                 err = float(np.hypot(x - x_t, y - y_t))
                 self.err_times.append(elapsed_run); self.err_values.append(err)
-                self.err_line.set_data(list(self.err_times), list(self.err_values))
-                self.ax_err.set_xlim(0.0, self.err_window_sec)
-                self.redraw_needed = True  # Force redraw when recording
+                # Decimate error plot updates to ~10 Hz
+                now_draw = time.monotonic()
+                if (now_draw - self._last_err_redraw) >= self._err_redraw_interval:
+                    self.err_line.set_data(list(self.err_times), list(self.err_values))
+                    self._last_err_redraw = now_draw
+                    self.redraw_needed = True
+                    self._err_changed = True
                 
                 # Logs
                 self.samples_t.append(elapsed_run)
@@ -759,15 +828,40 @@ class TiltBallWindow(QMainWindow):
 
         # Only redraw if something actually changed (major performance optimization)
         if self.redraw_needed:
-            # Windows-specific drawing optimization
-            if platform.system().lower() == 'windows':
-                # Use more aggressive drawing optimization on Windows
-                self.canvas.draw()
-                self.canvas.flush_events()
+            if self._use_blit and (self._bg_main is not None and self._bg_err is not None):
+                try:
+                    # Main axes
+                    if self._main_changed:
+                        self.canvas.restore_region(self._bg_main)
+                        try:
+                            self.ax.draw_artist(self.target_dot)
+                        except Exception:
+                            pass
+                        try:
+                            self.ax.draw_artist(self.ball)
+                        except Exception:
+                            pass
+                        self.canvas.blit(self.ax.bbox)
+                    # Error axes
+                    if self._err_changed:
+                        self.canvas.restore_region(self._bg_err)
+                        try:
+                            self.ax_err.draw_artist(self.err_line)
+                        except Exception:
+                            pass
+                        self.canvas.blit(self.ax_err.bbox)
+                    self.canvas.flush_events()
+                except Exception:
+                    # Fallback to a normal draw on any blitting error
+                    self.canvas.draw_idle()
+                finally:
+                    self._main_changed = False
+                    self._err_changed = False
+                    self.redraw_needed = False
             else:
-                # Standard drawing for other platforms
+                # Standard drawing fallback
                 self.canvas.draw_idle()
-            self.redraw_needed = False
+                self.redraw_needed = False
 
     def _finalize_measurement_path(self):
         """Show the recorded measurement path on the main plot."""
