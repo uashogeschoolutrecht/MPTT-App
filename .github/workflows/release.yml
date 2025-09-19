@@ -33,6 +33,32 @@ jobs:
         run: |
           pyinstaller --noconfirm pyinstaller-win.spec
 
+  # Optional: Code-sign the EXE/DLLs (SmartScreen/Defender trust)
+  # Configure one of the following before enabling:
+  # 1) Azure Trusted Signing (recommended for CI)
+  # 2) PFX certificate uploaded as an encrypted secret
+  # After configuration, uncomment a signing step below.
+  #
+  # - name: Sign with Azure Trusted Signing
+  #   uses: azure/trusted-signing-action@v0.5.0
+  #   with:
+  #     endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+  #     codeSigningAccountName: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+  #     certificateProfileName: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+  #     filesToSign: |
+  #       dist/MPPT-App/MPPT-App.exe
+  #       dist/MPPT-App/**/*.dll
+  #     description: MPPT-App
+  #     descriptionUrl: https://github.com/uashogeschoolutrecht/MPTT-App
+  #
+  # - name: Sign with PFX and signtool
+  #   if: false  # set to true when PFX secrets are set
+  #   shell: pwsh
+  #   run: |
+  #     $pfxPath = "$env:RUNNER_TEMP\\codesign.pfx"
+  #     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String("${{ secrets.CODESIGN_PFX_BASE64 }}"))
+  #     & "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe" sign /f $pfxPath /p "${{ secrets.CODESIGN_PFX_PASSWORD }}" /tr http://timestamp.digicert.com /td sha256 /fd sha256 "dist/MPPT-App/MPPT-App.exe"
+
       - name: Archive build folder
         shell: bash
         run: |
