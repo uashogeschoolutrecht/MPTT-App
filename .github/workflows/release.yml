@@ -1,0 +1,53 @@
+name: Build and Release MPPT-App (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install system deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-win.txt
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller --noconfirm pyinstaller-win.spec
+
+      - name: Archive build folder
+        shell: bash
+        run: |
+          cd dist
+          7z a MPPT-App-win.zip "MPPT-App"
+
+      - name: Upload artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPPT-App-win
+          path: dist/MPPT-App-win.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MPPT-App-win.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
