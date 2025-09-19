@@ -1,4 +1,4 @@
-name: Build and Release MPPT-App (Windows)
+name: Build and Release MPPT-App (Windows & macOS)
 
 on:
   push:
@@ -75,5 +75,51 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/MPPT-App-win.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      - name: Build macOS app bundle
+        shell: bash
+        run: |
+          pyinstaller --noconfirm mppt.spec
+          test -d "dist/MPPT-App.app" || (echo "App bundle not found" && ls -la dist && exit 1)
+
+      - name: Create DMG
+        shell: bash
+        run: |
+          mkdir -p dist/dmg
+          cp -R "dist/MPPT-App.app" "dist/dmg/MPPT-App.app"
+          hdiutil create -volname "MPPT-App" -srcfolder "dist/dmg" -ov -format UDZO "dist/MPPT-App-mac.dmg"
+          ls -lh dist
+
+      - name: Upload artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPPT-App-mac
+          path: dist/MPPT-App-mac.dmg
+
+      - name: Attach DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MPPT-App-mac.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
