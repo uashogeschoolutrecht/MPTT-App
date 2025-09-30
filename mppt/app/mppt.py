@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QCheckBox,
-    QComboBox,
     QSlider,
     QSizePolicy,
     QLineEdit,
@@ -281,40 +280,6 @@ class TiltBallWindow(QMainWindow):
         controls.addWidget(self.lbl_refresh)
         controls.addWidget(self.s_refresh)
 
-        # Axis mapping controls
-        controls.addSpacing(6)
-        controls.addWidget(QLabel("Axis mapping", self))
-        # Left-Right (X) mapping
-        row_map_x = QHBoxLayout()
-        row_map_x.addWidget(QLabel("Left–Right (X):"))
-        self.cmb_axis_x = QComboBox(self)
-        self.cmb_axis_x.addItem("Flexion (X)", userData="flex")
-        self.cmb_axis_x.addItem("Lateroflexion (Y)", userData="latero")
-        self.cmb_axis_x.addItem("Axial rotation (Z)", userData="axial")
-        # Default mapping: Left–Right uses Axial (Z) inverted
-        self.cmb_axis_x.setCurrentIndex(2)
-        row_map_x.addWidget(self.cmb_axis_x)
-        self.chk_inv_x = QCheckBox("Invert", self)
-        row_map_x.addWidget(self.chk_inv_x)
-        # Invert X by default
-        self.chk_inv_x.setChecked(True)
-        row_map_x.addStretch(1)
-        controls.addLayout(row_map_x)
-
-        # Up-Down (Y) mapping
-        row_map_y = QHBoxLayout()
-        row_map_y.addWidget(QLabel("Up–Down (Y):"))
-        self.cmb_axis_y = QComboBox(self)
-        self.cmb_axis_y.addItem("Flexion (X)", userData="flex")
-        self.cmb_axis_y.addItem("Lateroflexion (Y)", userData="latero")
-        self.cmb_axis_y.addItem("Axial rotation (Z)", userData="axial")
-        # Default mapping: Up–Down uses Lateroflexion (Y)
-        self.cmb_axis_y.setCurrentIndex(1)
-        row_map_y.addWidget(self.cmb_axis_y)
-        self.chk_inv_y = QCheckBox("Invert", self)
-        row_map_y.addWidget(self.chk_inv_y)
-        row_map_y.addStretch(1)
-        controls.addLayout(row_map_y)
 
         # Blind segment controls
         controls.addSpacing(6)
@@ -397,11 +362,6 @@ class TiltBallWindow(QMainWindow):
         self.s_target.valueChanged.connect(self._on_target_changed)
         self.s_refresh.valueChanged.connect(self._on_refresh_changed)
         self.btn_save.clicked.connect(self._on_save)
-        # Axis mapping signals
-        self.cmb_axis_x.currentIndexChanged.connect(self._on_axis_mapping_changed)
-        self.cmb_axis_y.currentIndexChanged.connect(self._on_axis_mapping_changed)
-        self.chk_inv_x.toggled.connect(self._on_axis_mapping_changed)
-        self.chk_inv_y.toggled.connect(self._on_axis_mapping_changed)
         # Blind signals
         self.chk_blind.toggled.connect(self._on_blind_toggled)
         self.s_blind_dur.valueChanged.connect(self._on_blind_dur_changed)
@@ -586,39 +546,12 @@ class TiltBallWindow(QMainWindow):
         except Exception:
             # If anything goes wrong during early init, keep Blind: OFF
             pass
-        # Axis mapping summary
-        try:
-            map_x_key = self.cmb_axis_x.currentData() if hasattr(self, 'cmb_axis_x') else 'latero'
-            map_y_key = self.cmb_axis_y.currentData() if hasattr(self, 'cmb_axis_y') else 'flex'
-            invx = self.chk_inv_x.isChecked() if hasattr(self, 'chk_inv_x') else False
-            invy = self.chk_inv_y.isChecked() if hasattr(self, 'chk_inv_y') else False
-            def _name(k):
-                return {'flex':'Flex','latero':'Latero','axial':'Axial'}.get(k, k)
-            map_txt = f"Map X={_name(map_x_key)}{'(−)' if invx else ''}, Y={_name(map_y_key)}{'(−)' if invy else ''}"
-        except Exception:
-            map_txt = ""
-        return f"Range: ±{self.xy_range:.0f}°, Filter: {'ON' if filter_on else 'OFF'}, N={n}, Target: {tgt}s, Blind: {blind_txt} {map_txt}"
-
-    def _on_axis_mapping_changed(self, *_args):
-        self._update_settings_label()
+        return f"Range: ±{self.xy_range:.0f}°, Filter: {'ON' if filter_on else 'OFF'}, N={n}, Target: {tgt}s, Blind: {blind_txt}"
 
     def _apply_axis_mapping(self, flex: float, latero: float, axial: float):
-        """Return (x, y) after applying user-selected axis mapping and inversion."""
-        # Select values
-        key_x = self.cmb_axis_x.currentData() if hasattr(self, 'cmb_axis_x') else 'latero'
-        key_y = self.cmb_axis_y.currentData() if hasattr(self, 'cmb_axis_y') else 'flex'
-        val_map = {
-            'flex': float(flex),
-            'latero': float(latero),
-            'axial': float(axial),
-        }
-        x = val_map.get(key_x, float(latero))
-        y = val_map.get(key_y, float(flex))
-        # Apply inversion
-        if hasattr(self, 'chk_inv_x') and self.chk_inv_x.isChecked():
-            x = -x
-        if hasattr(self, 'chk_inv_y') and self.chk_inv_y.isChecked():
-            y = -y
+        """Return (x, y) with fixed mapping: X = -axial (Z), Y = lateroflexion (Y)."""
+        x = -float(axial)
+        y = float(latero)
         # Clip to range
         x = float(np.clip(x, -self.xy_range, self.xy_range))
         y = float(np.clip(y, -self.xy_range, self.xy_range))
@@ -1204,10 +1137,10 @@ class TiltBallWindow(QMainWindow):
             "calibrated": bool(self.neutral_R is not None),
             "neutral_quaternion_wxyz": (lambda qxyzw: ([float(qxyzw[3]), float(qxyzw[0]), float(qxyzw[1]), float(qxyzw[2])] if qxyzw is not None else []))(R.from_matrix(self.neutral_R).as_quat() if self.neutral_R is not None else None),
             "axis_mapping": {
-                "map_x": (self.cmb_axis_x.currentData() if hasattr(self, 'cmb_axis_x') else 'latero'),
-                "map_y": (self.cmb_axis_y.currentData() if hasattr(self, 'cmb_axis_y') else 'flex'),
-                "invert_x": (self.chk_inv_x.isChecked() if hasattr(self, 'chk_inv_x') else False),
-                "invert_y": (self.chk_inv_y.isChecked() if hasattr(self, 'chk_inv_y') else False),
+                "map_x": "axial",
+                "map_y": "latero",
+                "invert_x": True,
+                "invert_y": False,
             },
             "blind_enabled": bool(self.chk_blind.isChecked()),
             "blind_repeat_enabled": bool(self.chk_blind_repeat.isChecked()) if hasattr(self, 'chk_blind_repeat') else False,
