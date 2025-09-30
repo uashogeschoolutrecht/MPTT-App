@@ -7,6 +7,7 @@ from collections import deque
 from typing import List, Optional
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 import matplotlib
 # Force Qt backend for Matplotlib in the frozen app
 matplotlib.use("QtAgg", force=True)
@@ -36,7 +37,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QTextEdit,
     QProgressBar,
+    QFileDialog,
 )
+ 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -97,13 +100,14 @@ class TiltBallWindow(QMainWindow):
         self.sensor: Optional[MovellaDOTSensor] = sensors[0] if sensors else None
 
         # State
-        self.xy_range = 30.0
+        self.xy_range = 15.0
         self.step = 5.0
         self.min_range = 5.0
         self.max_range = 180.0
-        # Start with measurement stopped and target not moving
+    # Start with measurement stopped and target not moving
         self.is_running = False
-        self.neutral_q: Optional[np.ndarray] = None  # Neutral orientation for optional calibration
+    # Neutral orientation (rotation matrix) for calibration
+        self.neutral_R: Optional[np.ndarray] = None
         # Measurement timing
         self.measure_start_t: Optional[float] = None
         # Measurement path storage (recorded while running)
@@ -115,6 +119,7 @@ class TiltBallWindow(QMainWindow):
         self.samples_pitch: List[float] = []
         self.samples_x: List[float] = []
         self.samples_y: List[float] = []
+        self.samples_axial: List[float] = []  # axial rotation (deg)
         self.samples_tx: List[float] = []
         self.samples_ty: List[float] = []
         self.samples_err: List[float] = []
@@ -125,6 +130,7 @@ class TiltBallWindow(QMainWindow):
         # Moving average buffers
         self.buf_roll: deque = deque(maxlen=5)
         self.buf_pitch: deque = deque(maxlen=5)
+        self.buf_axial: deque = deque(maxlen=5)
 
         # Performance optimization: track last values to avoid unnecessary redraws
         self.last_ball_x = 0.0
@@ -208,10 +214,10 @@ class TiltBallWindow(QMainWindow):
 
         root.addWidget(self.canvas, 2)
 
-        # Controls panel
+    # Controls panel
         controls = QVBoxLayout()
 
-        self.lbl_deg = QLabel("L/R: +0.0°, F/B: +0.0°", self)
+        self.lbl_deg = QLabel("Flex: +0.0°, Latero: +0.0°, Axial: +0.0°", self)
         self.lbl_deg.setAlignment(Qt.AlignCenter)
         controls.addWidget(self.lbl_deg)
 
@@ -275,6 +281,7 @@ class TiltBallWindow(QMainWindow):
         self.s_refresh.setSingleStep(1)
         controls.addWidget(self.lbl_refresh)
         controls.addWidget(self.s_refresh)
+
 
         # Blind segment controls
         controls.addSpacing(6)
@@ -378,6 +385,19 @@ class TiltBallWindow(QMainWindow):
         self.lbl_refresh.setText(f"Refresh = {hz:.0f}Hz")
         
         self.timer.start()
+        # Schedule automatic calibration shortly after startup to capture a neutral pose
+        self._auto_cal_attempts = 3
+        QTimer.singleShot(1200, self._auto_cal_try)
+
+    def _auto_cal_try(self):
+        try:
+            self._on_calibrate()
+            if getattr(self, 'neutral_R', None) is None and getattr(self, '_auto_cal_attempts', 0) > 0:
+                self._auto_cal_attempts -= 1
+                QTimer.singleShot(1000, self._auto_cal_try)
+        except Exception:
+            # Ignore auto-cal errors, user can still press Set Neutral
+            pass
 
     # ------------- Axes setup -------------
     def _setup_main_axes(self):
@@ -530,17 +550,47 @@ class TiltBallWindow(QMainWindow):
             pass
         return f"Range: ±{self.xy_range:.0f}°, Filter: {'ON' if filter_on else 'OFF'}, N={n}, Target: {tgt}s, Blind: {blind_txt}"
 
+    def _apply_axis_mapping(self, flex: float, latero: float, axial: float):
+        """Return (x, y) with fixed mapping: X = -axial (Z), Y = lateroflexion (Y)."""
+        x = -float(axial)
+        y = float(latero)
+        # Clip to range
+        x = float(np.clip(x, -self.xy_range, self.xy_range))
+        y = float(np.clip(y, -self.xy_range, self.xy_range))
+        return x, y
+
     def _update_settings_label(self):
         self.lbl_settings.setText(self._settings_text(self.chk_filter.isChecked(), int(self.s_win.value()), int(self.s_target.value())))
 
     # ------------- Slots -------------
     def _on_calibrate(self):
-        # Capture current orientation as neutral (like 'n' key in reference code)
+        # Capture current orientation as neutral rotation matrix, using Euler angles when available
         data = self.sensor.get_collected_data() if self.sensor else None
-        if data and len(data.get('quaternions', [])) > 0:
-            q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
-            self.neutral_q = _quat_normalize(q_cur)
-            print("\nNeutral orientation captured for relative measurements.")
+        if data:
+            R_neu = None
+            # Prefer Euler angles from sensor
+            eulers = data.get('euler_angles', None)
+            if eulers is not None and len(eulers) > 0:
+                roll, pitch, yaw = [float(v) for v in eulers[-1]]
+                try:
+                    # Build using typical sensor convention: yaw(Z), pitch(Y), roll(X)
+                    R_neu = R.from_euler('ZYX', [yaw, pitch, roll], degrees=True).as_matrix()
+                except Exception:
+                    R_neu = None
+            # Fallback to quaternion if Euler not available
+            if R_neu is None and len(data.get('quaternions', [])) > 0:
+                q = np.asarray(data['quaternions'][-1], dtype=np.float64)
+                q = _quat_normalize(q)
+                q_xyzw = np.array([q[1], q[2], q[3], q[0]], dtype=np.float64)
+                try:
+                    R_neu = R.from_quat(q_xyzw).as_matrix()
+                except Exception:
+                    R_neu = None
+            if R_neu is not None:
+                self.neutral_R = R_neu
+                print("\nNeutral orientation captured (matrix).")
+            else:
+                print("\nNo sensor data available for calibration.")
         else:
             print("\nNo sensor data available for calibration.")
 
@@ -579,7 +629,7 @@ class TiltBallWindow(QMainWindow):
             self.meas_blind_line.set_data([], [])
             self.meas_blind_line.set_visible(False)
             self.samples_t.clear(); self.samples_roll.clear(); self.samples_pitch.clear()
-            self.samples_x.clear(); self.samples_y.clear(); self.samples_tx.clear(); self.samples_ty.clear()
+            self.samples_x.clear(); self.samples_y.clear(); self.samples_axial.clear(); self.samples_tx.clear(); self.samples_ty.clear()
             self.samples_err.clear(); self.samples_quat.clear(); self.samples_blind.clear()
             self.ax_err.set_xlim(0.0, self.err_window_sec)
             self.redraw_needed = True  # Force redraw after clearing data
@@ -621,12 +671,14 @@ class TiltBallWindow(QMainWindow):
     def _on_filter_toggled(self, _checked: bool):
         self.buf_roll.clear()
         self.buf_pitch.clear()
+        self.buf_axial.clear()
         self._update_settings_label()
 
     def _on_filter_size_changed(self, val: int):
-        self.buf_roll.clear(); self.buf_pitch.clear()
+        self.buf_roll.clear(); self.buf_pitch.clear(); self.buf_axial.clear()
         self.buf_roll.maxlen = int(val)
         self.buf_pitch.maxlen = int(val)
+        self.buf_axial.maxlen = int(val)
         self.lbl_win.setText(f"N = {int(val)}")
         self._update_settings_label()
 
@@ -666,7 +718,21 @@ class TiltBallWindow(QMainWindow):
         self.blind_enabled = bool(checked)
         self.s_blind_dur.setEnabled(checked)
         self.s_blind_start.setEnabled(checked)
+        # Enable/disable the repeat checkbox itself
         self.chk_blind_repeat.setEnabled(checked)
+        # When enabling blind, automatically enable repeating as requested
+        if checked:
+            try:
+                self.chk_blind_repeat.setChecked(True)
+            except Exception:
+                pass
+        else:
+            # When disabling blind, also uncheck repeat for consistency
+            try:
+                self.chk_blind_repeat.setChecked(False)
+            except Exception:
+                pass
+        # Enable the interval slider only if blind is on and repeat is checked
         rep_enabled = checked and self.chk_blind_repeat.isChecked()
         self.s_blind_every.setEnabled(rep_enabled)
         self._update_settings_label()
@@ -723,32 +789,49 @@ class TiltBallWindow(QMainWindow):
 
         # Always read latest sensor data to allow practicing with the red dot
         data = self.sensor.get_collected_data() if self.sensor else None
-        if data and len(data.get('quaternions', [])) > 0:
-            q_cur = np.asarray(data['quaternions'][-1], dtype=np.float64)
-            q_cur = _quat_normalize(q_cur)
-
-            # Use direct quaternion to roll/pitch conversion (absolute orientation)
-            roll_raw, pitch_raw = _quat_to_roll_pitch(q_cur[0], q_cur[1], q_cur[2], q_cur[3])
-
-            # For now, use absolute measurements (can be enhanced with relative if neutral_q is set)
-            # If you want relative measurements like in reference code:
-            # if self.neutral_q is not None:
-            #     q_rel = _quat_mul(_quat_conj(self.neutral_q), q_cur)
-            #     q_rel = _quat_normalize(q_rel)
-            #     roll_raw, pitch_raw = _quat_to_roll_pitch(q_rel[0], q_rel[1], q_rel[2], q_rel[3])
-
-            roll, pitch = roll_raw, pitch_raw
+        if data:
+            # Get latest orientation from sensor Euler angles
+            eulers = data.get('euler_angles', None)
+            if eulers is None or len(eulers) == 0:
+                # No Euler data; nothing to update
+                return
+            roll, pitch, yaw = [float(v) for v in eulers[-1]]
+            # Build rotation matrix from sensor Euler (common: R = Rz(yaw) @ Ry(pitch) @ Rx(roll))
+            try:
+                R_cur = R.from_euler('ZYX', [yaw, pitch, roll], degrees=True).as_matrix()
+            except Exception:
+                return
+            # Apply calibration: express in neutral frame if available
+            if self.neutral_R is not None:
+                R_rel = self.neutral_R.T @ R_cur
+            else:
+                R_rel = R_cur
+            # Decompose in anatomical order using yaw-decoupled formulas from R_rel
+            # For Tait-Bryan 'xyz':
+            #   latero (β) = asin(-r31)
+            #   flex   (α) = atan2(r32, r33)
+            #   axial  (γ) = atan2(r21, r11)
+            r11 = R_rel[0, 0]; r21 = R_rel[1, 0]; r31 = R_rel[2, 0]
+            r32 = R_rel[2, 1]; r33 = R_rel[2, 2]
+            # Clamp for numerical safety
+            val = float(np.clip(-r31, -1.0, 1.0))
+            latero_raw = float(np.degrees(np.arcsin(val)))
+            flex_raw = float(np.degrees(np.arctan2(r32, r33)))
+            axial_raw = float(np.degrees(np.arctan2(r21, r11)))
 
             if self.chk_filter.isChecked():
-                self.buf_roll.append(roll)
-                self.buf_pitch.append(pitch)
-                roll_f = float(np.mean(self.buf_roll)) if len(self.buf_roll) > 0 else float(roll)
-                pitch_f = float(np.mean(self.buf_pitch)) if len(self.buf_pitch) > 0 else float(pitch)
-            else:
-                roll_f, pitch_f = float(roll), float(pitch)
 
-            x = float(np.clip(roll_f, -self.xy_range, self.xy_range))
-            y = float(np.clip(pitch_f, -self.xy_range, self.xy_range))
+                self.buf_roll.append(flex_raw)
+                self.buf_pitch.append(latero_raw)
+                self.buf_axial.append(axial_raw)
+                flex = float(np.mean(self.buf_roll)) if len(self.buf_roll) > 0 else flex_raw
+                latero = float(np.mean(self.buf_pitch)) if len(self.buf_pitch) > 0 else latero_raw
+                axial = float(np.mean(self.buf_axial)) if len(self.buf_axial) > 0 else axial_raw
+            else:
+                flex, latero, axial = flex_raw, latero_raw, axial_raw
+
+            # Apply user-selected axis mapping
+            x, y = self._apply_axis_mapping(flex, latero, axial)
 
             # Determine blind visibility for the red ball
             blind_active_now = False
@@ -778,7 +861,7 @@ class TiltBallWindow(QMainWindow):
                 self._main_changed = True
 
             # Only update label if text actually changed (optimization)
-            new_label_text = f"Raw Roll: {roll_f:+.1f}°, Raw Pitch: {pitch_f:+.1f}°"
+            new_label_text = f"Flex: {flex:+.1f}°, Latero: {latero:+.1f}°, Axial: {axial:+.1f}°"
             if new_label_text != self.last_label_text:
                 self.lbl_deg.setText(new_label_text)
                 self.last_label_text = new_label_text
@@ -786,7 +869,7 @@ class TiltBallWindow(QMainWindow):
             # Reduce console output frequency for performance
             if hasattr(self, '_last_print_time'):
                 if time.time() - self._last_print_time > 0.1:  # Print max 10Hz
-                    print(f"Roll:{roll_f:+.1f}°, Pitch:{pitch_f:+.1f}°", end='\r')
+                    print(f"Flex:{flex:+.1f}°, Latero:{latero:+.1f}°, Axial:{axial:+.1f}°", end='\r')
                     self._last_print_time = time.time()
             else:
                 self._last_print_time = time.time()
@@ -809,14 +892,21 @@ class TiltBallWindow(QMainWindow):
                 
                 # Logs
                 self.samples_t.append(elapsed_run)
-                self.samples_roll.append(roll_f)
-                self.samples_pitch.append(pitch_f)
+                self.samples_roll.append(flex)
+                self.samples_pitch.append(latero)
+                self.samples_axial.append(axial)
                 self.samples_x.append(x)
                 self.samples_y.append(y)
                 self.samples_tx.append(float(x_t))
                 self.samples_ty.append(float(y_t))
                 self.samples_err.append(err)
-                self.samples_quat.append([float(v) for v in q_cur])
+                # Also log a quaternion derived from current absolute matrix for continuity (w,x,y,z)
+                try:
+                    q_xyzw = R.from_matrix(R_cur).as_quat()
+                    q_wxyz = [float(q_xyzw[3]), float(q_xyzw[0]), float(q_xyzw[1]), float(q_xyzw[2])]
+                except Exception:
+                    q_wxyz = [1.0, 0.0, 0.0, 0.0]
+                self.samples_quat.append(q_wxyz)
                 self.samples_blind.append(1 if blind_active_now else 0)
 
                 # Auto-stop when elapsed reaches the selected duration
@@ -905,6 +995,99 @@ class TiltBallWindow(QMainWindow):
                 pass
         self.canvas.draw_idle()
 
+    # ------------- Post-save UI helpers -------------
+    def _show_snackbar(self, message: str, duration_ms: int = 2500):
+        """Show a transient green status message at the bottom (status bar)."""
+        try:
+            sb = self.statusBar()
+            # Remember current style
+            old_style = sb.styleSheet() if sb else ""
+            if sb:
+                sb.setStyleSheet("QStatusBar{background:#2e7d32;color:white;font-weight:600;}")
+                sb.showMessage(message, duration_ms)
+                # Restore original style after duration
+                def _restore():
+                    try:
+                        sb.setStyleSheet(old_style)
+                    except Exception:
+                        pass
+                QTimer.singleShot(duration_ms + 50, _restore)
+        except Exception:
+            # Fallback: print only
+            print(message)
+
+    def _reset_post_save(self):
+        """Reset plots, data, and controls so a new measurement can start cleanly."""
+        try:
+            # Ensure not running
+            self.is_running = False
+            self.measure_start_t = None
+            # Clear measurement lines
+            self.meas_x.clear(); self.meas_y.clear()
+            if hasattr(self, 'meas_line') and self.meas_line:
+                self.meas_line.set_data([], [])
+                self.meas_line.set_visible(False)
+            if hasattr(self, 'meas_blind_line') and self.meas_blind_line:
+                self.meas_blind_line.set_data([], [])
+                self.meas_blind_line.set_visible(False)
+            # Clear error data and line
+            self.err_times.clear(); self.err_values.clear()
+            if hasattr(self, 'err_line') and self.err_line:
+                self.err_line.set_data([], [])
+            # Remove any blind spans
+            if hasattr(self, 'err_blind_spans') and self.err_blind_spans:
+                try:
+                    for sp in self.err_blind_spans:
+                        sp.remove()
+                except Exception:
+                    pass
+                self.err_blind_spans = []
+            self.active_blind_start = None
+            self.active_blind_end = None
+            self.active_blind_windows = []
+            # Clear sample logs
+            self.samples_t.clear(); self.samples_roll.clear(); self.samples_pitch.clear()
+            self.samples_x.clear(); self.samples_y.clear(); self.samples_axial.clear()
+            self.samples_tx.clear(); self.samples_ty.clear(); self.samples_err.clear()
+            self.samples_quat.clear(); self.samples_blind.clear()
+            # Reset target to start of path and ball to center
+            self.theta_current = 0.0
+            try:
+                self.target_dot.set_data([self.x_path[0]], [self.y_path[0]])
+                self.last_target_x = self.x_path[0]; self.last_target_y = self.y_path[0]
+            except Exception:
+                pass
+            try:
+                self.ball.set_visible(True)
+                self.ball.set_data([0.0], [0.0])
+                self.last_ball_x = 0.0; self.last_ball_y = 0.0
+                self.last_blind_state = False
+            except Exception:
+                pass
+            # Reset label and buttons
+            self.last_label_text = ""
+            try:
+                self.lbl_deg.setText("Flex: +0.0°, Latero: +0.0°, Axial: +0.0°")
+            except Exception:
+                pass
+            try:
+                self.btn_toggle.setText("Start")
+                self.btn_save.setText("Save")
+                self.btn_save.setEnabled(False)
+            except Exception:
+                pass
+            # Redraw
+            self.redraw_needed = True
+            self._main_changed = True
+            self._err_changed = True
+            if self._use_blit:
+                # Full draw to refresh backgrounds after cleanup
+                self.canvas.draw()
+            else:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
     def _on_save(self):
         """Save metadata and raw samples to a results folder."""
         if self.is_running:
@@ -914,12 +1097,38 @@ class TiltBallWindow(QMainWindow):
             print("No data to save.")
             return
 
-        # Prepare output folder
+        # Ask user where to save the measurement folder
         ts = time.strftime("%Y%m%d_%H%M%S")
         subj = (self.in_subject.text().strip() or "unknown").replace(" ", "_")
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "results"))
-        out_dir = os.path.join(base_dir, f"{ts}_S{subj}")
-        os.makedirs(out_dir, exist_ok=True)
+        default_name = f"{ts}_S{subj}"
+        # Default to the app's results directory as starting location
+        default_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "results"))
+        try:
+            os.makedirs(default_base, exist_ok=True)
+        except Exception:
+            pass
+        # Open a directory picker
+        selected_dir = QFileDialog.getExistingDirectory(self, "Select folder to save measurement", default_base)
+        if not selected_dir:
+            # User cancelled
+            print("Save cancelled by user.")
+            return
+        # Build the target measurement folder path
+        out_dir = os.path.join(selected_dir, default_name)
+        # Ensure uniqueness by appending -1, -2, ... if needed
+        if os.path.exists(out_dir):
+            suffix = 1
+            while True:
+                candidate = f"{out_dir}-{suffix}"
+                if not os.path.exists(candidate):
+                    out_dir = candidate
+                    break
+                suffix += 1
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            print(f"Failed to create output directory: {e}")
+            return
 
         # Compute stats from collected samples
         try:
@@ -1059,6 +1268,15 @@ class TiltBallWindow(QMainWindow):
             "device_address": address,
             "device_tag": tag,
             "sensor_settings": cfg,
+            "angles_mode": "anatomical_xyz",  # flexion, lateroflexion, axial
+            "calibrated": bool(self.neutral_R is not None),
+            "neutral_quaternion_wxyz": (lambda qxyzw: ([float(qxyzw[3]), float(qxyzw[0]), float(qxyzw[1]), float(qxyzw[2])] if qxyzw is not None else []))(R.from_matrix(self.neutral_R).as_quat() if self.neutral_R is not None else None),
+            "axis_mapping": {
+                "map_x": "axial",
+                "map_y": "latero",
+                "invert_x": True,
+                "invert_y": False,
+            },
             "blind_enabled": bool(self.chk_blind.isChecked()),
             "blind_repeat_enabled": bool(self.chk_blind_repeat.isChecked()) if hasattr(self, 'chk_blind_repeat') else False,
             "blind_start_s": float(self.active_blind_start) if self.active_blind_start is not None else float(self.blind_start_sec if self.chk_blind.isChecked() else 0.0),
@@ -1067,7 +1285,12 @@ class TiltBallWindow(QMainWindow):
             "blind_windows": list(self.active_blind_windows) if self.active_blind_windows else ([] if self.active_blind_start is None else [(self.active_blind_start, self.active_blind_end)]),
             "stats": stats_dict,
             "columns": [
-                "t_s","roll_deg","pitch_deg","x_deg","y_deg","target_x_deg","target_y_deg","error_deg","blind","q_w","q_x","q_y","q_z"
+                "Time(ms)",
+                "Xtarget(deg)",
+                "Ytarget(deg)",
+                "Xuser(deg)",
+                "Yuser(deg)",
+                "error(absolute error xy)",
             ],
         }
 
@@ -1082,12 +1305,14 @@ class TiltBallWindow(QMainWindow):
                     f.write(f"# {k}: {v}\n")
                 f.write(",".join(meta["columns"]) + "\n")
                 for i in range(len(self.samples_t)):
-                    row = [
-                        self.samples_t[i], self.samples_roll[i], self.samples_pitch[i],
-                        self.samples_x[i], self.samples_y[i], self.samples_tx[i], self.samples_ty[i],
-                        self.samples_err[i], float(self.samples_blind[i] if i < len(self.samples_blind) else 0),
-                    ] + self.samples_quat[i]
-                    f.write(",".join(f"{v:.6f}" for v in row) + "\n")
+                    # Time in milliseconds for compatibility
+                    t_ms = int(round(self.samples_t[i] * 1000.0))
+                    x_t = float(self.samples_tx[i])
+                    y_t = float(self.samples_ty[i])
+                    x_u = float(self.samples_x[i])
+                    y_u = float(self.samples_y[i])
+                    err = float(self.samples_err[i])
+                    f.write(f"{t_ms},{x_t:.6f},{y_t:.6f},{x_u:.6f},{y_u:.6f},{err:.6f}\n")
         except Exception as e:
             print(f"Failed to write samples.csv: {e}")
 
@@ -1117,12 +1342,13 @@ class TiltBallWindow(QMainWindow):
                     bf.write(",".join(meta["columns"]) + "\n")
                     for i in range(len(self.samples_t)):
                         if i < len(self.samples_blind) and self.samples_blind[i]:
-                            row = [
-                                self.samples_t[i], self.samples_roll[i], self.samples_pitch[i],
-                                self.samples_x[i], self.samples_y[i], self.samples_tx[i], self.samples_ty[i],
-                                self.samples_err[i], float(self.samples_blind[i]),
-                            ] + self.samples_quat[i]
-                            bf.write(",".join(f"{v:.6f}" for v in row) + "\n")
+                            t_ms = int(round(self.samples_t[i] * 1000.0))
+                            x_t = float(self.samples_tx[i])
+                            y_t = float(self.samples_ty[i])
+                            x_u = float(self.samples_x[i])
+                            y_u = float(self.samples_y[i])
+                            err = float(self.samples_err[i])
+                            bf.write(f"{t_ms},{x_t:.6f},{y_t:.6f},{x_u:.6f},{y_u:.6f},{err:.6f}\n")
         except Exception as e:
             print(f"Failed to write blind_samples.csv: {e}")
 
@@ -1166,10 +1392,11 @@ class TiltBallWindow(QMainWindow):
             fig_err.savefig(os.path.join(out_dir, "error_plot.png"), dpi=150, bbox_inches='tight', facecolor='white')
         except Exception as e:
             print(f"Failed to save error_plot.png: {e}")
-
+        
+        # Finalize: notify and reset UI for next run
         print(f"Saved results to: {out_dir}")
-        self.btn_save.setText("Saved")
-        self.btn_save.setEnabled(False)
+        self._show_snackbar(f"Saved to: {out_dir}", 2500)
+        self._reset_post_save()
 
     def _on_exit(self):
         """Handle exit button click"""
@@ -1375,7 +1602,7 @@ async def init_sensors(status_cb=None) -> List[MovellaDOTSensor]:
     config = SensorConfiguration(
         output_rate=OutputRate.RATE_30,
         filter_profile=FilterProfile.GENERAL,
-        payload_mode=PayloadMode.ORIENTATION_QUATERNION,
+        payload_mode=PayloadMode.ORIENTATION_EULER,
     )
 
     for device in dot_devices:
