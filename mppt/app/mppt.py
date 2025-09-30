@@ -37,7 +37,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QTextEdit,
     QProgressBar,
+    QFileDialog,
 )
+ 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -98,7 +100,7 @@ class TiltBallWindow(QMainWindow):
         self.sensor: Optional[MovellaDOTSensor] = sensors[0] if sensors else None
 
         # State
-        self.xy_range = 30.0
+        self.xy_range = 15.0
         self.step = 5.0
         self.min_range = 5.0
         self.max_range = 180.0
@@ -716,7 +718,21 @@ class TiltBallWindow(QMainWindow):
         self.blind_enabled = bool(checked)
         self.s_blind_dur.setEnabled(checked)
         self.s_blind_start.setEnabled(checked)
+        # Enable/disable the repeat checkbox itself
         self.chk_blind_repeat.setEnabled(checked)
+        # When enabling blind, automatically enable repeating as requested
+        if checked:
+            try:
+                self.chk_blind_repeat.setChecked(True)
+            except Exception:
+                pass
+        else:
+            # When disabling blind, also uncheck repeat for consistency
+            try:
+                self.chk_blind_repeat.setChecked(False)
+            except Exception:
+                pass
+        # Enable the interval slider only if blind is on and repeat is checked
         rep_enabled = checked and self.chk_blind_repeat.isChecked()
         self.s_blind_every.setEnabled(rep_enabled)
         self._update_settings_label()
@@ -979,6 +995,99 @@ class TiltBallWindow(QMainWindow):
                 pass
         self.canvas.draw_idle()
 
+    # ------------- Post-save UI helpers -------------
+    def _show_snackbar(self, message: str, duration_ms: int = 2500):
+        """Show a transient green status message at the bottom (status bar)."""
+        try:
+            sb = self.statusBar()
+            # Remember current style
+            old_style = sb.styleSheet() if sb else ""
+            if sb:
+                sb.setStyleSheet("QStatusBar{background:#2e7d32;color:white;font-weight:600;}")
+                sb.showMessage(message, duration_ms)
+                # Restore original style after duration
+                def _restore():
+                    try:
+                        sb.setStyleSheet(old_style)
+                    except Exception:
+                        pass
+                QTimer.singleShot(duration_ms + 50, _restore)
+        except Exception:
+            # Fallback: print only
+            print(message)
+
+    def _reset_post_save(self):
+        """Reset plots, data, and controls so a new measurement can start cleanly."""
+        try:
+            # Ensure not running
+            self.is_running = False
+            self.measure_start_t = None
+            # Clear measurement lines
+            self.meas_x.clear(); self.meas_y.clear()
+            if hasattr(self, 'meas_line') and self.meas_line:
+                self.meas_line.set_data([], [])
+                self.meas_line.set_visible(False)
+            if hasattr(self, 'meas_blind_line') and self.meas_blind_line:
+                self.meas_blind_line.set_data([], [])
+                self.meas_blind_line.set_visible(False)
+            # Clear error data and line
+            self.err_times.clear(); self.err_values.clear()
+            if hasattr(self, 'err_line') and self.err_line:
+                self.err_line.set_data([], [])
+            # Remove any blind spans
+            if hasattr(self, 'err_blind_spans') and self.err_blind_spans:
+                try:
+                    for sp in self.err_blind_spans:
+                        sp.remove()
+                except Exception:
+                    pass
+                self.err_blind_spans = []
+            self.active_blind_start = None
+            self.active_blind_end = None
+            self.active_blind_windows = []
+            # Clear sample logs
+            self.samples_t.clear(); self.samples_roll.clear(); self.samples_pitch.clear()
+            self.samples_x.clear(); self.samples_y.clear(); self.samples_axial.clear()
+            self.samples_tx.clear(); self.samples_ty.clear(); self.samples_err.clear()
+            self.samples_quat.clear(); self.samples_blind.clear()
+            # Reset target to start of path and ball to center
+            self.theta_current = 0.0
+            try:
+                self.target_dot.set_data([self.x_path[0]], [self.y_path[0]])
+                self.last_target_x = self.x_path[0]; self.last_target_y = self.y_path[0]
+            except Exception:
+                pass
+            try:
+                self.ball.set_visible(True)
+                self.ball.set_data([0.0], [0.0])
+                self.last_ball_x = 0.0; self.last_ball_y = 0.0
+                self.last_blind_state = False
+            except Exception:
+                pass
+            # Reset label and buttons
+            self.last_label_text = ""
+            try:
+                self.lbl_deg.setText("Flex: +0.0°, Latero: +0.0°, Axial: +0.0°")
+            except Exception:
+                pass
+            try:
+                self.btn_toggle.setText("Start")
+                self.btn_save.setText("Save")
+                self.btn_save.setEnabled(False)
+            except Exception:
+                pass
+            # Redraw
+            self.redraw_needed = True
+            self._main_changed = True
+            self._err_changed = True
+            if self._use_blit:
+                # Full draw to refresh backgrounds after cleanup
+                self.canvas.draw()
+            else:
+                self.canvas.draw_idle()
+        except Exception:
+            pass
+
     def _on_save(self):
         """Save metadata and raw samples to a results folder."""
         if self.is_running:
@@ -988,12 +1097,38 @@ class TiltBallWindow(QMainWindow):
             print("No data to save.")
             return
 
-        # Prepare output folder
+        # Ask user where to save the measurement folder
         ts = time.strftime("%Y%m%d_%H%M%S")
         subj = (self.in_subject.text().strip() or "unknown").replace(" ", "_")
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "results"))
-        out_dir = os.path.join(base_dir, f"{ts}_S{subj}")
-        os.makedirs(out_dir, exist_ok=True)
+        default_name = f"{ts}_S{subj}"
+        # Default to the app's results directory as starting location
+        default_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "results"))
+        try:
+            os.makedirs(default_base, exist_ok=True)
+        except Exception:
+            pass
+        # Open a directory picker
+        selected_dir = QFileDialog.getExistingDirectory(self, "Select folder to save measurement", default_base)
+        if not selected_dir:
+            # User cancelled
+            print("Save cancelled by user.")
+            return
+        # Build the target measurement folder path
+        out_dir = os.path.join(selected_dir, default_name)
+        # Ensure uniqueness by appending -1, -2, ... if needed
+        if os.path.exists(out_dir):
+            suffix = 1
+            while True:
+                candidate = f"{out_dir}-{suffix}"
+                if not os.path.exists(candidate):
+                    out_dir = candidate
+                    break
+                suffix += 1
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            print(f"Failed to create output directory: {e}")
+            return
 
         # Compute stats from collected samples
         try:
@@ -1251,10 +1386,11 @@ class TiltBallWindow(QMainWindow):
             fig_err.savefig(os.path.join(out_dir, "error_plot.png"), dpi=150, bbox_inches='tight', facecolor='white')
         except Exception as e:
             print(f"Failed to save error_plot.png: {e}")
-
+        
+        # Finalize: notify and reset UI for next run
         print(f"Saved results to: {out_dir}")
-        self.btn_save.setText("Saved")
-        self.btn_save.setEnabled(False)
+        self._show_snackbar(f"Saved to: {out_dir}", 2500)
+        self._reset_post_save()
 
     def _on_exit(self):
         """Handle exit button click"""
