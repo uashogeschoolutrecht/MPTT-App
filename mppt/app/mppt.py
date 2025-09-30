@@ -1285,7 +1285,12 @@ class TiltBallWindow(QMainWindow):
             "blind_windows": list(self.active_blind_windows) if self.active_blind_windows else ([] if self.active_blind_start is None else [(self.active_blind_start, self.active_blind_end)]),
             "stats": stats_dict,
             "columns": [
-                "t_s","flex_deg","latero_deg","axial_deg","x_deg","y_deg","target_x_deg","target_y_deg","error_deg","blind","q_w","q_x","q_y","q_z"
+                "Time(ms)",
+                "Xtarget(deg)",
+                "Ytarget(deg)",
+                "Xuser(deg)",
+                "Yuser(deg)",
+                "error(absolute error xy)",
             ],
         }
 
@@ -1300,13 +1305,14 @@ class TiltBallWindow(QMainWindow):
                     f.write(f"# {k}: {v}\n")
                 f.write(",".join(meta["columns"]) + "\n")
                 for i in range(len(self.samples_t)):
-                    row = [
-                        self.samples_t[i], self.samples_roll[i], self.samples_pitch[i],
-                        (self.samples_axial[i] if i < len(self.samples_axial) else 0.0),
-                        self.samples_x[i], self.samples_y[i], self.samples_tx[i], self.samples_ty[i],
-                        self.samples_err[i], float(self.samples_blind[i] if i < len(self.samples_blind) else 0),
-                    ] + self.samples_quat[i]
-                    f.write(",".join(f"{v:.6f}" for v in row) + "\n")
+                    # Time in milliseconds for compatibility
+                    t_ms = int(round(self.samples_t[i] * 1000.0))
+                    x_t = float(self.samples_tx[i])
+                    y_t = float(self.samples_ty[i])
+                    x_u = float(self.samples_x[i])
+                    y_u = float(self.samples_y[i])
+                    err = float(self.samples_err[i])
+                    f.write(f"{t_ms},{x_t:.6f},{y_t:.6f},{x_u:.6f},{y_u:.6f},{err:.6f}\n")
         except Exception as e:
             print(f"Failed to write samples.csv: {e}")
 
@@ -1336,13 +1342,13 @@ class TiltBallWindow(QMainWindow):
                     bf.write(",".join(meta["columns"]) + "\n")
                     for i in range(len(self.samples_t)):
                         if i < len(self.samples_blind) and self.samples_blind[i]:
-                            row = [
-                                self.samples_t[i], self.samples_roll[i], self.samples_pitch[i],
-                                (self.samples_axial[i] if i < len(self.samples_axial) else 0.0),
-                                self.samples_x[i], self.samples_y[i], self.samples_tx[i], self.samples_ty[i],
-                                self.samples_err[i], float(self.samples_blind[i]),
-                            ] + self.samples_quat[i]
-                            bf.write(",".join(f"{v:.6f}" for v in row) + "\n")
+                            t_ms = int(round(self.samples_t[i] * 1000.0))
+                            x_t = float(self.samples_tx[i])
+                            y_t = float(self.samples_ty[i])
+                            x_u = float(self.samples_x[i])
+                            y_u = float(self.samples_y[i])
+                            err = float(self.samples_err[i])
+                            bf.write(f"{t_ms},{x_t:.6f},{y_t:.6f},{x_u:.6f},{y_u:.6f},{err:.6f}\n")
         except Exception as e:
             print(f"Failed to write blind_samples.csv: {e}")
 
