@@ -31,7 +31,7 @@ jobs:
       - name: Build with PyInstaller
         shell: bash
         run: |
-          pyinstaller --noconfirm pyinstaller-win.spec
+          pyinstaller --noconfirm --onefile pyinstaller-win.spec
 
   # Optional: Code-sign the EXE/DLLs (SmartScreen/Defender trust)
   # Configure one of the following before enabling:
