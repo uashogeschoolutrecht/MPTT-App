@@ -31,7 +31,7 @@ jobs:
       - name: Build with PyInstaller
         shell: bash
         run: |
-          pyinstaller --noconfirm pyinstaller-win.spec
+          pyinstaller --noconfirm --onefile pyinstaller-win.spec
 
   # Optional: Code-sign the EXE/DLLs (SmartScreen/Defender trust)
   # Configure one of the following before enabling:
@@ -46,8 +46,7 @@ jobs:
   #     codeSigningAccountName: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
   #     certificateProfileName: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
   #     filesToSign: |
-  #       dist/MPPT-App/MPPT-App.exe
-  #       dist/MPPT-App/**/*.dll
+  #       dist/MPPT-App.exe
   #     description: MPPT-App
   #     descriptionUrl: https://github.com/uashogeschoolutrecht/MPTT-App
   #
@@ -57,13 +56,13 @@ jobs:
   #   run: |
   #     $pfxPath = "$env:RUNNER_TEMP\\codesign.pfx"
   #     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String("${{ secrets.CODESIGN_PFX_BASE64 }}"))
-  #     & "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe" sign /f $pfxPath /p "${{ secrets.CODESIGN_PFX_PASSWORD }}" /tr http://timestamp.digicert.com /td sha256 /fd sha256 "dist/MPPT-App/MPPT-App.exe"
+  #     & "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe" sign /f $pfxPath /p "${{ secrets.CODESIGN_PFX_PASSWORD }}" /tr http://timestamp.digicert.com /td sha256 /fd sha256 "dist/MPPT-App.exe"
 
       - name: Archive build folder
         shell: bash
         run: |
           cd dist
-          7z a MPPT-App-win.zip "MPPT-App"
+          7z a MPPT-App-win.zip "MPPT-App.exe"
 
       - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
