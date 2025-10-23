@@ -8,7 +8,7 @@ block_cipher = None
 
 a = Analysis(
     [ENTRY_SCRIPT],
-    pathex=[os.path.abspath('.')],
+    pathex=[os.path.abspath('.')],   # include your project root
     binaries=[],
     datas=[],
     hiddenimports=[
@@ -25,29 +25,39 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    noarchive=False,
+    noarchive=True,   # store .pyc unpacked; helps reduce AV heuristics
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
+# For ONEDIR: exclude_binaries=True in EXE, then add COLLECT below.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,                 # <-- ONEDIR pattern
     name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
+    console=False,                         # windowed app; set True for console
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/appicon.ico',
-    version='windows/version_info.txt',
+    version='windows/version_info.txt',    # version resource
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name=APP_NAME,                         # dist/MPPT-App/ folder
 )
