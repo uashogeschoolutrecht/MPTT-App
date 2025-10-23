@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           cd dist
-          7z a MPPT-App-win.zip "MPPT-App.exe"
+          7z a MPPT-App-win.zip "MPPT-App/*"
 
       - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
