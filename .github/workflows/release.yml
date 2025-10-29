@@ -124,7 +124,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-windows-pyside6:
-    name: Build Windows EXE (PySide6-deploy)
+    name: Build Windows EXE (cx_Freeze)
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -141,49 +141,77 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements-win.txt
-          # Install full PySide6 to get pyside6-deploy tool
-          pip install PySide6
+          # Install cx_Freeze as alternative to PyInstaller
+          pip install cx_Freeze
 
-      - name: Build with PySide6-deploy
+      - name: Create cx_Freeze setup script
         shell: bash
         run: |
-          # pyside6-deploy comes with PySide6 package
-          pyside6-deploy --name MPPT-App-PySide6 --force mppt/app/mppt.py
+          cat > setup_cxfreeze.py << 'EOF'
+          import sys
+          from cx_Freeze import setup, Executable
+          
+          # Dependencies are already installed
+          build_exe_options = {
+              "packages": [
+                  "asyncio", "bleak", "matplotlib", "numpy", "scipy",
+                  "PySide6", "qasync", "mppt"
+              ],
+              "includes": [
+                  "matplotlib.backends.backend_qtagg",
+                  "scipy.spatial.transform",
+              ],
+              "excludes": ["tkinter", "unittest", "email", "http", "xml", "pydoc"],
+              "include_files": [],
+              "zip_include_packages": ["*"],
+              "zip_exclude_packages": [],
+          }
+          
+          base = "Win32GUI" if sys.platform == "win32" else None
+          
+          setup(
+              name="MPPT-App",
+              version="1.0",
+              description="MPPT Tracking Application",
+              options={"build_exe": build_exe_options},
+              executables=[Executable(
+                  "mppt/app/mppt.py",
+                  base=base,
+                  target_name="MPPT-App.exe",
+                  icon="assets/appicon.ico" if sys.platform == "win32" else None
+              )]
+          )
+          EOF
 
-      - name: Locate and archive deployment folder
+      - name: Build with cx_Freeze
         shell: bash
         run: |
-          # PySide6-deploy creates a deployment folder, usually named after the app
-          # Find the deployment directory
-          if [ -d "deployment" ]; then
-            cd deployment
-            7z a ../MPPT-App-PySide6-win.zip *
-          elif [ -d "MPPT-App-PySide6" ]; then
-            cd MPPT-App-PySide6
-            7z a ../MPPT-App-PySide6-win.zip *
+          python setup_cxfreeze.py build
+
+      - name: Archive build folder
+        shell: bash
+        run: |
+          cd build
+          # Find the build directory (usually build/exe.win-amd64-3.12 or similar)
+          BUILD_DIR=$(find . -maxdepth 1 -type d -name "exe.*" | head -n 1)
+          if [ -n "$BUILD_DIR" ]; then
+            cd "$BUILD_DIR"
+            7z a ../../MPPT-App-cxFreeze-win.zip *
           else
-            echo "Deployment directory not found, searching..."
+            echo "Error: Could not find cx_Freeze build directory"
             ls -la
-            # Try to find any directory created by pyside6-deploy
-            DEPLOY_DIR=$(find . -maxdepth 1 -type d -name "*MPPT*" -o -name "deployment" | head -n 1)
-            if [ -n "$DEPLOY_DIR" ]; then
-              cd "$DEPLOY_DIR"
-              7z a ../MPPT-App-PySide6-win.zip *
-            else
-              echo "Error: Could not find deployment directory"
-              exit 1
-            fi
+            exit 1
           fi
 
       - name: Upload artifact (workflow)
         uses: actions/upload-artifact@v4
         with:
-          name: MPPT-App-PySide6-win
-          path: MPPT-App-PySide6-win.zip
+          name: MPPT-App-cxFreeze-win
+          path: MPPT-App-cxFreeze-win.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: MPPT-App-PySide6-win.zip
+          files: MPPT-App-cxFreeze-win.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
