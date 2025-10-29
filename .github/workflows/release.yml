@@ -122,3 +122,66 @@ jobs:
           files: dist/MPPT-App-mac.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows-pyside6:
+    name: Build Windows EXE (PySide6-deploy)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install system deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-win.txt
+          pip install pyside6-deploy
+
+      - name: Build with PySide6-deploy
+        shell: bash
+        run: |
+          pyside6-deploy --name MPPT-App-PySide6 --force mppt/app/mppt.py
+
+      - name: Locate and archive deployment folder
+        shell: bash
+        run: |
+          # PySide6-deploy creates a deployment folder, usually named after the app
+          # Find the deployment directory
+          if [ -d "deployment" ]; then
+            cd deployment
+            7z a ../MPPT-App-PySide6-win.zip *
+          elif [ -d "MPPT-App-PySide6" ]; then
+            cd MPPT-App-PySide6
+            7z a ../MPPT-App-PySide6-win.zip *
+          else
+            echo "Deployment directory not found, searching..."
+            ls -la
+            # Try to find any directory created by pyside6-deploy
+            DEPLOY_DIR=$(find . -maxdepth 1 -type d -name "*MPPT*" -o -name "deployment" | head -n 1)
+            if [ -n "$DEPLOY_DIR" ]; then
+              cd "$DEPLOY_DIR"
+              7z a ../MPPT-App-PySide6-win.zip *
+            else
+              echo "Error: Could not find deployment directory"
+              exit 1
+            fi
+          fi
+
+      - name: Upload artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPPT-App-PySide6-win
+          path: MPPT-App-PySide6-win.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MPPT-App-PySide6-win.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
