@@ -141,11 +141,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements-win.txt
-          pip install pyside6-deploy
+          # Install full PySide6 to get pyside6-deploy tool
+          pip install PySide6
 
       - name: Build with PySide6-deploy
         shell: bash
         run: |
+          # pyside6-deploy comes with PySide6 package
           pyside6-deploy --name MPPT-App-PySide6 --force mppt/app/mppt.py
 
       - name: Locate and archive deployment folder
