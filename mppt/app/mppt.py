@@ -153,6 +153,7 @@ class TiltBallWindow(QMainWindow):
         self.err_values: deque = deque()
         self.t0 = time.monotonic()
         self.theta_current = 0.0
+        self._last_sensor_idx = -1  # Tracks last sensor reading already logged; prevents duplicate/missed samples
 
         # Blind segment configuration (UI-controlled)
         self.blind_enabled = False
@@ -631,6 +632,10 @@ class TiltBallWindow(QMainWindow):
             self.samples_t.clear(); self.samples_roll.clear(); self.samples_pitch.clear()
             self.samples_x.clear(); self.samples_y.clear(); self.samples_axial.clear(); self.samples_tx.clear(); self.samples_ty.clear()
             self.samples_err.clear(); self.samples_quat.clear(); self.samples_blind.clear()
+            # Clear sensor data collector so each run starts from a clean slate
+            if self.sensor and self.sensor.data_collector:
+                self.sensor.data_collector.clear()
+            self._last_sensor_idx = -1
             self.ax_err.set_xlim(0.0, self.err_window_sec)
             self.redraw_needed = True  # Force redraw after clearing data
             # Snapshot blind windows for this run
@@ -787,134 +792,156 @@ class TiltBallWindow(QMainWindow):
             self.redraw_needed = True
             self._main_changed = True
 
-        # Always read latest sensor data to allow practicing with the red dot
-        data = self.sensor.get_collected_data() if self.sensor else None
-        if data:
-            # Get latest orientation from sensor Euler angles
-            eulers = data.get('euler_angles', None)
-            if eulers is None or len(eulers) == 0:
-                # No Euler data; nothing to update
-                return
-            roll, pitch, yaw = [float(v) for v in eulers[-1]]
-            # Build rotation matrix from sensor Euler (common: R = Rz(yaw) @ Ry(pitch) @ Rx(roll))
-            try:
-                R_cur = R.from_euler('ZYX', [yaw, pitch, roll], degrees=True).as_matrix()
-            except Exception:
-                return
-            # Apply calibration: express in neutral frame if available
-            if self.neutral_R is not None:
-                R_rel = self.neutral_R.T @ R_cur
-            else:
-                R_rel = R_cur
-            # Decompose in anatomical order using yaw-decoupled formulas from R_rel
-            # For Tait-Bryan 'xyz':
-            #   latero (β) = asin(-r31)
-            #   flex   (α) = atan2(r32, r33)
-            #   axial  (γ) = atan2(r21, r11)
-            r11 = R_rel[0, 0]; r21 = R_rel[1, 0]; r31 = R_rel[2, 0]
-            r32 = R_rel[2, 1]; r33 = R_rel[2, 2]
-            # Clamp for numerical safety
-            val = float(np.clip(-r31, -1.0, 1.0))
-            latero_raw = float(np.degrees(np.arcsin(val)))
-            flex_raw = float(np.degrees(np.arctan2(r32, r33)))
-            axial_raw = float(np.degrees(np.arctan2(r21, r11)))
+        # --- Process ALL new sensor readings since the last UI tick ---
+        # Root-cause fix: previously one sample was logged per UI tick using eulers[-1],
+        # so the saved sample count equalled the UI refresh rate (9–48 Hz across runs)
+        # instead of the sensor rate (30 Hz). Now every new BLE packet is logged exactly once.
+        collector_data = (
+            self.sensor.data_collector.data
+            if (self.sensor and self.sensor.data_collector) else []
+        )
+        n_total = len(collector_data)
+        if n_total > 0:
+            new_start = max(self._last_sensor_idx + 1, 0)
+            new_readings = collector_data[new_start:n_total]
+            n_new = len(new_readings)
+            now_tick = time.monotonic()
 
-            if self.chk_filter.isChecked():
+            # Running display values; fall back to last known position if no new data
+            flex = latero = axial = 0.0
+            x = self.last_ball_x
+            y = self.last_ball_y
+            has_new = False
 
-                self.buf_roll.append(flex_raw)
-                self.buf_pitch.append(latero_raw)
-                self.buf_axial.append(axial_raw)
-                flex = float(np.mean(self.buf_roll)) if len(self.buf_roll) > 0 else flex_raw
-                latero = float(np.mean(self.buf_pitch)) if len(self.buf_pitch) > 0 else latero_raw
-                axial = float(np.mean(self.buf_axial)) if len(self.buf_axial) > 0 else axial_raw
-            else:
-                flex, latero, axial = flex_raw, latero_raw, axial_raw
+            for i, d in enumerate(new_readings):
+                if d.euler_angles is None:
+                    continue
+                roll_d  = float(d.euler_angles.roll)
+                pitch_d = float(d.euler_angles.pitch)
+                yaw_d   = float(d.euler_angles.yaw)
+                try:
+                    R_cur_d = R.from_euler('ZYX', [yaw_d, pitch_d, roll_d], degrees=True).as_matrix()
+                except Exception:
+                    continue
+                R_rel_d = self.neutral_R.T @ R_cur_d if self.neutral_R is not None else R_cur_d
+                r11_d = R_rel_d[0, 0]; r21_d = R_rel_d[1, 0]; r31_d = R_rel_d[2, 0]
+                r32_d = R_rel_d[2, 1]; r33_d = R_rel_d[2, 2]
+                latero_raw_d = float(np.degrees(np.arcsin(float(np.clip(-r31_d, -1.0, 1.0)))))
+                flex_raw_d   = float(np.degrees(np.arctan2(r32_d, r33_d)))
+                axial_raw_d  = float(np.degrees(np.arctan2(r21_d, r11_d)))
 
-            # Apply user-selected axis mapping
-            x, y = self._apply_axis_mapping(flex, latero, axial)
+                if self.chk_filter.isChecked():
+                    self.buf_roll.append(flex_raw_d)
+                    self.buf_pitch.append(latero_raw_d)
+                    self.buf_axial.append(axial_raw_d)
+                    flex_d   = float(np.mean(self.buf_roll))
+                    latero_d = float(np.mean(self.buf_pitch))
+                    axial_d  = float(np.mean(self.buf_axial))
+                else:
+                    flex_d, latero_d, axial_d = flex_raw_d, latero_raw_d, axial_raw_d
 
-            # Determine blind visibility for the red ball
-            blind_active_now = False
-            if self.is_running and self.measure_start_t is not None:
-                now_t = time.monotonic()
-                elapsed_run_tmp = now_t - self.measure_start_t
-                if self.active_blind_windows:
-                    for s, e in self.active_blind_windows:
-                        if s <= elapsed_run_tmp < e:
-                            blind_active_now = True
-                            break
-                elif (self.active_blind_start is not None and self.active_blind_end is not None):
-                    if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
-                        blind_active_now = True
+                x_d, y_d = self._apply_axis_mapping(flex_d, latero_d, axial_d)
+                flex, latero, axial, x, y = flex_d, latero_d, axial_d, x_d, y_d
+                has_new = True
 
-            # Only update ball if position or visibility changed significantly (optimization)
-            position_changed = abs(x - self.last_ball_x) > 0.05 or abs(y - self.last_ball_y) > 0.05
-            visibility_changed = blind_active_now != self.last_blind_state
-            
-            if position_changed or visibility_changed:
-                self.ball.set_visible(not blind_active_now)
-                self.ball.set_data([x], [y])
-                self.last_ball_x = x
-                self.last_ball_y = y
-                self.last_blind_state = blind_active_now
-                self.redraw_needed = True
-                self._main_changed = True
+                # --- Log each sample if measurement is active ---
+                if self.is_running and self.measure_start_t is not None:
+                    # Estimate wall-clock time: the most-recent reading arrived at now_tick;
+                    # earlier readings in this batch are spaced ~1/30 s apart going backwards.
+                    offset_s = (n_new - 1 - i) / 30.0
+                    elapsed_run = (now_tick - offset_s) - self.measure_start_t
+                    if elapsed_run < 0.0:
+                        continue
+                    # Target position at this sample's estimated time
+                    theta_d = ((elapsed_run % period) / period) * (2.0 * np.pi)
+                    r_td = self._cached_range_R0 + self._cached_range_A * np.cos(8.0 * theta_d)
+                    x_td = r_td * np.cos(theta_d)
+                    y_td = r_td * np.sin(theta_d)
+                    err_d = float(np.hypot(x_d - x_td, y_d - y_td))
 
-            # Only update label if text actually changed (optimization)
-            new_label_text = f"Flex: {flex:+.1f}°, Latero: {latero:+.1f}°, Axial: {axial:+.1f}°"
-            if new_label_text != self.last_label_text:
-                self.lbl_deg.setText(new_label_text)
-                self.last_label_text = new_label_text
+                    self.meas_x.append(x_d); self.meas_y.append(y_d)
+                    self.err_times.append(elapsed_run); self.err_values.append(err_d)
+                    self.samples_t.append(elapsed_run)
+                    self.samples_roll.append(flex_d)
+                    self.samples_pitch.append(latero_d)
+                    self.samples_axial.append(axial_d)
+                    self.samples_x.append(x_d)
+                    self.samples_y.append(y_d)
+                    self.samples_tx.append(float(x_td))
+                    self.samples_ty.append(float(y_td))
+                    self.samples_err.append(err_d)
+                    try:
+                        q_xyzw = R.from_matrix(R_cur_d).as_quat()
+                        q_wxyz = [float(q_xyzw[3]), float(q_xyzw[0]),
+                                  float(q_xyzw[1]), float(q_xyzw[2])]
+                    except Exception:
+                        q_wxyz = [1.0, 0.0, 0.0, 0.0]
+                    self.samples_quat.append(q_wxyz)
+                    blind_d = False
+                    if self.active_blind_windows:
+                        for bs, be in self.active_blind_windows:
+                            if bs <= elapsed_run < be:
+                                blind_d = True
+                                break
+                    self.samples_blind.append(1 if blind_d else 0)
 
-            # Reduce console output frequency for performance
-            if hasattr(self, '_last_print_time'):
-                if time.time() - self._last_print_time > 0.1:  # Print max 10Hz
-                    print(f"Flex:{flex:+.1f}°, Latero:{latero:+.1f}°, Axial:{axial:+.1f}°", end='\r')
-                    self._last_print_time = time.time()
-            else:
-                self._last_print_time = time.time()
+                    # Auto-stop when elapsed reaches selected duration
+                    if elapsed_run >= self.err_window_sec:
+                        self.is_running = False
+                        self._finalize_measurement_path()
+                        self.btn_toggle.setText("Start")
+                        self.btn_save.setEnabled(True)
+                        break
 
-            # Error plot and logging: record only while running
-            if self.is_running and self.measure_start_t is not None:
-                now_t = time.monotonic()
-                elapsed_run = now_t - self.measure_start_t
-                # Append current red-dot position to measurement path and logs
-                self.meas_x.append(x); self.meas_y.append(y)
-                err = float(np.hypot(x - x_t, y - y_t))
-                self.err_times.append(elapsed_run); self.err_values.append(err)
-                # Decimate error plot updates to ~10 Hz
+            # Decimate error-plot updates to ~10 Hz
+            if self.err_values:
                 now_draw = time.monotonic()
                 if (now_draw - self._last_err_redraw) >= self._err_redraw_interval:
                     self.err_line.set_data(list(self.err_times), list(self.err_values))
                     self._last_err_redraw = now_draw
                     self.redraw_needed = True
                     self._err_changed = True
-                
-                # Logs
-                self.samples_t.append(elapsed_run)
-                self.samples_roll.append(flex)
-                self.samples_pitch.append(latero)
-                self.samples_axial.append(axial)
-                self.samples_x.append(x)
-                self.samples_y.append(y)
-                self.samples_tx.append(float(x_t))
-                self.samples_ty.append(float(y_t))
-                self.samples_err.append(err)
-                # Also log a quaternion derived from current absolute matrix for continuity (w,x,y,z)
-                try:
-                    q_xyzw = R.from_matrix(R_cur).as_quat()
-                    q_wxyz = [float(q_xyzw[3]), float(q_xyzw[0]), float(q_xyzw[1]), float(q_xyzw[2])]
-                except Exception:
-                    q_wxyz = [1.0, 0.0, 0.0, 0.0]
-                self.samples_quat.append(q_wxyz)
-                self.samples_blind.append(1 if blind_active_now else 0)
 
-                # Auto-stop when elapsed reaches the selected duration
-                if elapsed_run >= self.err_window_sec:
-                    self.is_running = False
-                    self._finalize_measurement_path()
-                    self.btn_toggle.setText("Start")
-                    self.btn_save.setEnabled(True)
+            self._last_sensor_idx = n_total - 1
+
+            if has_new:
+                # --- Update display with the latest processed values ---
+                blind_active_now = False
+                if self.is_running and self.measure_start_t is not None:
+                    now_t = time.monotonic()
+                    elapsed_run_tmp = now_t - self.measure_start_t
+                    if self.active_blind_windows:
+                        for s, e in self.active_blind_windows:
+                            if s <= elapsed_run_tmp < e:
+                                blind_active_now = True
+                                break
+                    elif (self.active_blind_start is not None and self.active_blind_end is not None):
+                        if self.active_blind_start <= elapsed_run_tmp < self.active_blind_end:
+                            blind_active_now = True
+
+                position_changed = abs(x - self.last_ball_x) > 0.05 or abs(y - self.last_ball_y) > 0.05
+                visibility_changed = blind_active_now != self.last_blind_state
+                if position_changed or visibility_changed:
+                    self.ball.set_visible(not blind_active_now)
+                    self.ball.set_data([x], [y])
+                    self.last_ball_x = x
+                    self.last_ball_y = y
+                    self.last_blind_state = blind_active_now
+                    self.redraw_needed = True
+                    self._main_changed = True
+
+                new_label_text = f"Flex: {flex:+.1f}°, Latero: {latero:+.1f}°, Axial: {axial:+.1f}°"
+                if new_label_text != self.last_label_text:
+                    self.lbl_deg.setText(new_label_text)
+                    self.last_label_text = new_label_text
+
+                # Reduce console output frequency for performance
+                if hasattr(self, '_last_print_time'):
+                    if time.time() - self._last_print_time > 0.1:  # Print max 10Hz
+                        print(f"Flex:{flex:+.1f}°, Latero:{latero:+.1f}°, Axial:{axial:+.1f}°", end='\r')
+                        self._last_print_time = time.time()
+                else:
+                    self._last_print_time = time.time()
 
         # Only redraw if something actually changed (major performance optimization)
         if self.redraw_needed:

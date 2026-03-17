@@ -156,8 +156,8 @@ class MovellaDOTSensor:
         """Handle incoming sensor data notifications"""
         try:
             if self.data_collector:
-                parsed_data = self.data_collector.parser.parse(data)
                 self.data_collector.add_data(data)
+                parsed_data = self.data_collector.data[-1]  # Reuse the already-parsed SensorData
                                 
                 # if parsed_data.quaternion:
                 #     print(f"Quaternion (w,x,y,z): {parsed_data.quaternion.w:.3f}, "
